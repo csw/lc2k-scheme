@@ -1,5 +1,7 @@
 #lang racket
 
+(provide run-lc2k compile-and-run)
+
 (require "compiler.rkt")
 
 (define *lc2k-path* (expand-user-path "~/Dropbox/school/370/code/p1"))
@@ -11,9 +13,7 @@
   (let ([out (with-output-to-string
                (lambda ()
                  (system* *runner* "-p" prog "-m" result-loc)))])
-    (with-input-from-string out
-      (lambda ()
-        (string->number (read-line) )))))
+    (with-input-from-string out read-line)))
 
 (define (compile-and-run x)
   (let ([tmpf (make-temporary-file "lc2kscm-~a.as")])
