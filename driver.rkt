@@ -1,6 +1,6 @@
 #lang racket
 
-(provide run-lc2k compile-and-run)
+(provide run-lc2k compile-and-run compile-ret)
 
 (require "compiler.rkt")
 
@@ -19,3 +19,6 @@
   (let ([tmpf (make-temporary-file "lc2kscm-~a.as")])
     (compile-to x tmpf)
     (run-lc2k tmpf *lc2k-rv*)))
+
+(define (compile-ret x)
+  (decode-immediate (string->number (compile-and-run x))))

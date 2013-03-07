@@ -9,7 +9,8 @@
       (set! section s))
     (define (test-case code expect)
       (displayln (format "Testing ~a" code))
-      (let ([result (decode-immediate (string->number (compile-and-run code)))])
+      (let* ([wrapped `(lambda () ,code)]
+             [result (compile-ret wrapped)])
         (unless (equal? result expect)
           (raise-arguments-error 'test-case
                                  "Obtained wrong result"
