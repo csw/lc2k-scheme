@@ -2,6 +2,7 @@
 
 (require racket/dict)
 (require racket/format)
+(require racket/trace)
 
 (provide compile-program compile-to *lc2k-rv* decode-immediate)
 
@@ -149,12 +150,13 @@
 (define (expand-prims exp)
   (cond
    ; Core forms:
+   ((tagged-list? 'code exp) `(code ,(cadr exp) ,(expand-prims (caddr exp))))
    ((const? exp)      exp)
    ((prim? exp)       exp)
    ((ref? exp)        exp)
-   ((lambda? exp)     `(lambda ,(lambda->formals exp)
-                         ,(expand-prims (lambda->exp exp))))
-                                        ;((set!? exp)       `(set! ,(set!->var exp) ,(set!->exp exp)))
+   ;;((lambda? exp)     `(lambda ,(lambda->formals exp)
+   ;;                      ,(expand-prims (lambda->exp exp))))
+   ;((set!? exp)       `(set! ,(set!->var exp) ,(set!->exp exp)))
    ((if? exp)         `(if ,(expand-if-pred (if->condition exp))
                            ,(expand-prims (if->then exp))
                            ,(expand-prims (if->else exp))))
@@ -167,38 +169,6 @@
                                         ; Applications:
    ((app? exp)        (expand-call exp))
    (else              (error "unknown exp: " exp))))
-
-;; (+ 1 27) => ((move (temp t1)
-;;                    (const 1))
-;;              (move (temp t2)
-;;                    (const 27))
-;;              (primcall + (temp t1) (temp t2)))
-;;
-;; (+ (+ 1 27) 49)
-;;
-;;   lw  0 t1 C1
-;;   lw  0 t2 C2
-;;   add t1 t2 t3
-;;   lw  0 t4 C3
-;;   add t3 t4 t5
-;;
-;;   add 0 t5 1 ;; return sequence
-;;   jalr 6 7
-
-
-;; <temp1> ::= (temp <t>)
-;;
-;; <mem1>  ::= (mem <a>)
-;;
-;; <exp1> ::= (const <v>)
-;;         |  (primcall <prim> <t> ...)
-;;         |  <temp1>
-;;         |  <mem1>
-;;
-;; <stmt1> ::= (move <temp1> <exp1>)
-;;          |  (move <mem1> <temp1>)
-;;
-;; <body1> ::= <stmt1> ... (return <temp1>)
 
 ; num-environments : natural
 (define num-environments 0)
@@ -335,161 +305,12 @@
    [(empty? rest) e]
    [else (cons e rest)]))
 
-;; (+ (+ 3 4) 7)
-;; (+ 3 4)
-;; 
-;; ((move (temp 1) (const 3))
-;;  (move (temp 2) (const 4)))
-;;
-;; ((move (temp 1) (const 3))
-;;  (move (temp 2) (const 4))
-;;  (primcall + (temp 1) (temp 2)))
-;;
-;;
-;; t1 t2 t3 t4
-;;
-;; (tempify '(+ 4 3))
-;; =>
-;; '((move t1 3)
-;;   (move t2 4)
-;;   (move t3 (+ t1 t2)))
-;; 't1
-;;
-;; (tempify '(+ (+ 4 3) 9))
-;; =>
-;; '((move t1 3)
-;;   (move t2 4)
-;;   (move t3 (+ t1 t2))
-;;   (move t4 9)
-;;   (move t5 (+ t3 t5))
-;; 't5
-;;
-;; (+ (+ 4 3) 9)
-;; > ((+ 4 3) 9)
-;;  > (+ 4 3)
-;;   > (4 3)
-;;    > 4
-;;    < (move t1 4) / t1
-;;    > 3
-;;    < (move t2 3) / t2
-;;   < ((move t1 4) (move t2 3)) / (t1 t2)
-;;  < ((move t1 4) (move t2 3) (move t3 (+ t1 t2))) / (t3)
-;;  > (9)
-;;  < (move t4 9) / t4
-;; < (...) / (t3 t4)
-;; < (... (move t5 (+ t3 t4))) / t5
-;;
-;; (tempify 3)
-;; =>
-;; '((move t1 3))
-;; 't1
-
 (define (reg-ref n)
   (list 'register n))
 
 (define reg-n (make-parameter 0))
 
-(define (tempify-args el env)
-  (begin0 (for/fold ([stmts empty] [refs empty])
-              ([a el])
-            (let-values ([(s1 ref1) (use-temps-inner a env)])
-              (values
-               (cond
-                [(and (empty? stmts)
-                      (symbol? (car s1))) (list s1)]
-                [(empty? stmts) s1]
-                [else (cons s1 stmts)])
-               (cons ref1 refs))))
-    (reg-n (- (reg-n) (length el)))))
-
-(define (tempify-exp el env build)
-  (let-values ([(stmts referents) (tempify-args el env)])
-    (reg-n (add1 (reg-n)))
-    (let* ([end-expr (build referents)]
-           [reg (reg-ref (reg-n))]
-           [temp-move (list 'move reg end-expr)])
-      (values (add-before-if temp-move stmts)
-              reg))))
-
-(define (pasm-lambda-label l)
-  (cadr (assq 'label (lambda->exp l))))
-
-(define (use-temps-inner e env)
-  (match e
-    [(? const?)
-     (tempify-exp empty env (lambda (l)
-                              (list 'const e)))]
-    [(? symbol?)
-     (tempify-exp empty env (lambda (l)
-                              (list 'const (env-lookup env e))))]
-    [(? primcall?)
-     (tempify-exp (cdr e)
-                  env
-                  (lambda (tl)
-                    (append (list 'primcall (car e)) tl)))]
-    ;; if:
-    ;; generate code for the conditional
-    ;; then the false branch
-    ;; then the true branch
-    [(list 'if
-           (list (? prim-predicate? pred) p-args ..1)
-           if-then
-           if-else)
-     (tempify-exp p-args env
-                  (lambda (temps)
-                    (let ([label-true (internal-label)]
-                          [label-false (internal-label)]
-                          [registers
-                           (match pred
-                             ['%zero? (list 0 (car temps))] ; beq 0 temp
-                             ['%eq? temps])])               ; beq 1 2
-                      (let-values ([(f-code f-ref)
-                                    (use-temps-inner if-else env)]
-                                   [(t-code t-ref)
-                                    (use-temps-inner if-then env)])
-                        (list t-code
-                              label-true
-                              f-code
-                              label-false
-                              (list 'cond-jump 'eq registers
-                                    label-true label-false))))))
-     
-     ]
-    ;; ((lambda (foo) ...) arg)
-    ;; e.g. from desugaring of let
-    ;; need to marshal the args
-    ;; then issue a tail call to the lambda's label
-    ;; OR just bind the variables and branch
-    [(list (? lambda? l) args ...)
-     (tempify-exp (cdr e)
-                  env
-                  (lambda (tl)
-                    (append (list 'primcall (car e)) tl)))]
-    [(? lambda? exp)
-     (let ([inner-env (make-env env)])
-       (list 'lambda
-             (lambda->formals exp)
-             (let-values ([(stmts referent)
-                           (use-temps-inner (lambda->exp exp) inner-env)])
-               (cons (list 'label (lambda-label))
-                     (reverse (cons (list 'return referent)
-                                    (if (list? (car stmts))
-                                        stmts
-                                        (list stmts))))))))]
-    [(list 'define name (? lambda? l))
-     (let* ([ir (use-temps-inner l env)]
-            [label (pasm-lambda-label ir)])
-       (env-define env name (list (cons 'type 'lambda)
-                                  (cons 'def l)
-                                  (cons 'formals (lambda->formals l))
-                                  (cons 'label label)))
-       ir)]))
-
-(define (use-temps e [env (global-env)])
-  (parameterize ([reg-n 0])
-    (use-temps-inner e env)))
-
-(define (sethi-ullman-label lambda-exp)
+(define (sethi-ullman-label body-exp)
   (let* ([need-table (make-hash)]
          [need (lambda (exp)
                  (hash-ref need-table exp))]
@@ -513,7 +334,7 @@
                [(list 'if if-pred if-then if-else) ;; sequentially
                 (for-each su-scan (cdr exp))       ;; if-pred +1, then one
                 (apply max 1 (map need (cdr exp)))])))
-    (su-scan (lambda->exp lambda-exp))
+    (su-scan body-exp)
     need-table))
 
 (define (spill-code reg)
@@ -526,14 +347,15 @@
     [(list 'register n)
      `((lw 7 ,n ,(+ n 1)))]))
 
-(define (sethi-ullman-gen lambda-exp [env (global-env)])
-  (let* ([need-table (sethi-ullman-label lambda-exp)]
+(define (sethi-ullman-gen code-exp entry-label [env (global-env)])
+  (match-define (list 'code (list vars ...) body-exp)
+                code-exp)
+  (let* ([need-table (sethi-ullman-label body-exp)]
          [need (lambda (exp)
-                 (hash-ref need-table exp))]
+                 (hash-ref need-table exp 0))]
          [exp-reg-table (make-hash)]
          [exp-reg (lambda (exp) (hash-ref exp-reg-table exp))]
          [insns empty]
-         [entry-label (lambda-label)]
          [begin-label (internal-label)]
          [n 0]
          [k 3])
@@ -657,49 +479,14 @@
                (set! n base-n)
                (emit! 'label true-label)
                (cg if-then dd cd next-label)))])))
+    ;; function entry point
     (emit! 'label entry-label)
-    (cg (lambda->exp lambda-exp) '(register 1) 'return #f)
+    
+    ;; begin-label
+    (cg body-exp '(register 1) 'return #f)
     (reverse insns)))
 
 (define no-label "      ")
-
-(define (code-gen pasm-lambda)
-  (let ([pending-label no-label])
-    (define emit
-      (lambda args
-        (begin0 (string-join (map (lambda (v)
-                                    (~a v #:min-width 7))
-                                  (cons pending-label args)))
-          (set! pending-label no-label))))
-    (let ([raw-code (for/list ([expr (lambda->exp pasm-lambda)])
-                      (match expr
-                        [(list 'label l)
-                         (set! pending-label (~a l
-                                                 #:min-width 6
-                                                 #:max-width 6))]
-                        [(list 'move (list 'register dest) rvalue)
-                         (match rvalue
-                           [(list 'const v)
-                            (let* ([imm (immediate-rep v)]
-                                   [cname (const-ref imm)])
-                              (emit "lw" 0 dest cname))]
-                           [(list 'primcall
-                                  '+
-                                  (list 'register a)
-                                  (list 'register b))
-                            (emit "add" a b dest)]
-                           [(list 'primcall
-                                  '%nand
-                                  (list 'register a)
-                                  (list 'register b))
-                            (emit "nand" a b dest)])]
-                        [(list 'return (list 'register last-reg))
-                         (let ([ret (emit "jalr" 5 6)])
-                           (if (= last-reg 1)
-                               ret
-                               (list (emit "add" 0 last-reg 1)
-                                     ret)))]))])
-      (flatten (filter string? raw-code)))))
 
 (define (gen-asm sasm)
   (let* ([pending-label no-label]
@@ -723,60 +510,6 @@
               [(? list?) (fmt-asm dir)]))])
     (filter identity (map handle-directive sasm))))
 
-;; (match el
-;;   [(list (? symbol?))
-;;    (use-temps el)]
-;;   [(list a tl ...)
-;;    (let-values ([(s1    ref1) (use-temps a)]
-;;                 [(stmts referents) (tempify-args tl)])
-;;      (values (add-before-if s1 stmts)
-;;              (add-before-if ref1 referents)))]
-;;   [empty (values empty empty)]))
-
-;; [a
-;;  (tempify-exp empty
-;;               (lambda (ref-l)
-;;                 (match ref-l
-;;                   [empty a])))]
-
-;; [(? lambda? exp)
-;;  (list 'lambda
-;;        (lambda->formals exp)
-;;        (tempify-exp (lambda->exp exp)
-;;                     (lambda (ref)
-;;                       (list 'return ref))))]
-
-;; (let-values ([(stmts tail-exp) (split-at-right exp 1)])
-;;   (let ([mid (map linearize stmts)]
-;;         [tail (linearize tail-exp)])
-;;     (append 
-;;      mid
-;;      tail
-;;      (list 'return (if (move? tail)
-;;                        (move->temp tail)
-;;                        (true-v))))))
-
-;; [(list 'begin exp ...)
-;;  (if (null? (cdr exp))
-;;      (exp->ir1 exp)
-;;      (let-values ([(stmts tail-exp) (split-at-right exp 1)])
-;;        (list 'eseq
-;;              (foldr (lambda (l r) (if (null? r) l (list 'seq l r)))
-;;                     empty
-;;                     (map stmt->ir1 stmts))
-;;              (sexp->ir1 tail-exp))))]
-
-
-
-;; [(? list?) (list 'eseq
-;;                  (let-values ([(h t) (split-at-right e 1)])
-;;                    (list 'eseq
-;;                          (stm->ir1 h)
-;;                          (list t))))]
-
-;; (define (stm->ir1 e)
-;;   (match e
-;;     [(? list?))]))
 
 (define *runtime-text*
   '("        lw   0 5 entry"
@@ -790,59 +523,43 @@
         "SCMrv   .fill 559038737"
         (format "entry   .fill ~a" entry-pt-label)))
 
-(define (compile-program prog)
+(define (compile-top prog)
+  (define (compile-fun code label)
+    (for-each displayln
+              (gen-asm (sethi-ullman-gen (expand-prims code)
+                                         label))))
   (for-each displayln *runtime-text*)
-  (let* ([expanded (expand-prims prog)]
-         [sasm (sethi-ullman-gen expanded)]
-         [entry-label (cadr (findf (lambda (e)
-                                     (tagged-list? 'label e))
-                                   sasm))])
-    (for-each displayln (gen-asm sasm))
-    (for-each displayln (runtime-data entry-label)))
+  (match prog
+    [(list 'labels
+           (list (list lvars lexprs) ...)
+           top-expr)
+     (for ([lvar lvars]
+           [label (lambda-label)]
+           [lexpr lexprs])
+       (env-define (global-env) lvar (list 'fun-label label))
+       (compile-fun lexpr label))
+     (let ([entry-label (lambda-label)])
+       (compile-fun `(code () ,top-expr) entry-label)
+       (for-each displayln (runtime-data entry-label)))])
   (write-constant-defs))
 
-;; (define (compile-program prog)
-;;   (for-each displayln *runtime-text*)
-;;   (let* ([expanded (expand-prims prog)]
-;;          [pasm (use-temps expanded)]
-;;          [entry-label (pasm-lambda-label pasm)])
-;;     (for-each displayln (code-gen pasm))
-;;     (for-each displayln (runtime-data entry-label)))
-;;   (write-constant-defs))
-
-;; (define (compile-program-orig x)
-;;   (let ([text (reverse *runtime-text*)]
-;;         [data (reverse *runtime-data*)]
-;;         [stack-idx -1])
-;;     (define (emit s . args)
-;;       (set! text (cons (apply format s args) text)))
-;;     (define (emit-data s . args)
-;;       (set! data (cons (apply format s args) data)))
-;;     (define (save-reg n)
-;;       (emit "    sw    ~a ~a ~a" sp-reg n stack-idx)
-;;       (set! stack-idx (sub1 stack-idx)))
-;;     (define (emit-expr x)
-;;       (cond
-;;        [(const? x)
-;;         (emit "    lw   0 1 Cn")
-;;         (emit-data "Cn    .fill ~s" (immediate-rep x))]
-;;        [(primcall? x)
-;;         (match (primcall-op x)
-;;           [+
-;;            (emit-expr (primcall-operand2 x))
-;;            (emit-expr (primcall-operand1 x))
-;;            ;;(emit "    add ~a ~a ~a" c1-reg rv-reg rv-reg)
-;;            ])]
-;;        [else (raise-argument-error 'emit-expr "expr" x)]))
-;;     ;; do stuff here
-;;     (emit-expr x)
-;;     (emit "    jalr 5 6")
-    
-;;     ;; write output
-;;     (for ([s (reverse text)])
-;;       (displayln s))
-;;     (for ([s (reverse data)])
-;;       (displayln s))))
+;; convert to our labels / code representation
+(define (compile-program prog)
+  (let*-values ([(defs rest) (partition (lambda (e)
+                                          (tagged-list? 'define e))
+                                        (if (list? prog)
+                                            prog
+                                            (list prog)))]
+                [(label-defs) (for/list ([def defs])
+                              (match def
+                                [(list 'define
+                                       (list name formals ...)
+                                       body)
+                                 `(,name (code ,@formals) body)]))]
+                [(toplevel) (if (and (pair? rest) (empty? (cdr rest)))
+                                (car rest)
+                                rest)])
+    (compile-top `(labels ,label-defs ,toplevel))))
 
 (define (compile-to x path)
   (with-output-to-file path
