@@ -13,43 +13,44 @@
 
 (define *lc2k-rv* "SCMrv")
 
-(define fixnum-mask  #b01000000000000000000000000000000)
-(define fixnum-shift 1)
+(define tagged-mask  #b11000000000000000000000000000000)
+(define tagged-tag   #b01000000000000000000000000000000)
 (define tag-mask     #xEF000000)
 (define no-tag-mask  (bitwise-not tag-mask))
 (define tag-shift    24)
 (define tag-end      32)
 (define untag-shift  -24)
 (define char-shift   8)
-(define char-tag     #b01001111)
-(define char-tag-shifted (arithmetic-shift char-tag tag-shift))
+(define char-tag     (arithmetic-shift #b01001111 tag-shift))
 (define bool-tag     (arithmetic-shift #b01011111 tag-shift))
-(define true-tag     #b01011111)
-(define true-v       (arithmetic-shift true-tag tag-shift))
-(define false-tag    #b11011111)
-(define false-v      (arithmetic-shift false-tag tag-shift))
+(define true-v       (add1 bool-tag))
+(define false-v      bool-tag)
 (define empty-tag    #b01101111)
 (define empty-list-v (arithmetic-shift empty-tag tag-shift))
 (define pointer-mask #x0000FFFF)
 
-(define (tag-bits v)
+(define (tag-bits-old v)
   (bitwise-bit-field v tag-shift tag-end))
 
+(define (tag-bits v)
+  (bitwise-and v tag-mask))
+
 (define (decode-immediate v)
-  (if (= 0 (bitwise-and fixnum-mask v))
-      v ; fixnum
+  (if (= tagged-tag (bitwise-and tagged-mask v))
       (let ([tag (tag-bits v)])
         (cond
-         [(= tag true-tag) #t]
-         [(= tag false-tag) #f]
-         [(= tag empty-tag) empty]
+         [(= v true-v) #t]
+         [(= v false-v) #f]
+         [(= v empty-list-v) empty]
          [(= tag char-tag) (integer->char (bitwise-and v no-tag-mask))]
-         [else (raise-argument-error 'decode-immediate "immediate" v)]))))
+         [else (raise-argument-error 'decode-immediate "immediate" v)]))
+      ;; fixnum
+      v))
 
 (define (immediate-rep v)
   (cond
    [(integer? v) v]
-   [(char? v) (bitwise-ior (char->integer v) char-tag-shifted)]
+   [(char? v) (bitwise-ior (char->integer v) char-tag)]
    [(boolean? v) (match v
                    [#t true-v]
                    [#f false-v])]
@@ -136,8 +137,8 @@
                                            ,(expand-prims y))]
            [(list 'bitwise-and x y) `(%band ,(expand-prims x)
                                             ,(expand-prims y))]
-           [(list 'bitwise-or x y) `(%nand (bitwise-not ,(expand-prims x)
-                                                        ,(expand-prims y)))]
+           [(list 'bitwise-or x y) `(%nand ,(expand-prims `(bitwise-not ,x))
+                                           ,(expand-prims `(bitwise-not ,y)))]
            [(list 'bitwise-not x)  `(%bnot ,(expand-prims x))]
            [else #f])])
     (if expanded
@@ -210,14 +211,6 @@
 (make-env #f)
 (define (global-env) (dict-ref environments 0))
 
-(define (init-global-env)
-  (for ([def `((empty . (immediate ,empty-list-v))
-               (#t . (immediate ,true-v))
-               (#f . (immediate ,false-v)))])
-    (env-define (global-env)
-                (car def)
-                (cdr def))))
-
 (define lambda-n 0)
 
 (define (lambda-label)
@@ -255,6 +248,17 @@
                                                  ".fill "
                                                  (~a imm))
                                            "  ")))))
+
+(define (init-global-env)
+  (set! constants (make-hash))
+  (set! constant-n 0)
+  (for ([def `((empty . (immediate ,empty-list-v))
+               (#t . (immediate ,true-v))
+               (#f . (immediate ,false-v)))])
+    (env-define (global-env)
+                (car def)
+                (cdr def))))
+
 
 ;; ; allocate-environment : list[symbol] -> env-id
 ;; (define (allocate-environment fields)
@@ -499,10 +503,10 @@
           ;; unary primitive
           [(list 'primcall prim arg)
            (let ([call-label (internal-label)])
-             (let ([acode (cg arg #f call-label call-label)]
+             (let ([arg-reg (cg arg #f call-label call-label)]
                    [dest-reg (choose-reg 0)])
                (match prim
-                 ['%bnot (emit! 'nand arg arg dest-reg)]
+                 ['%bnot (emit! 'nand arg-reg arg-reg dest-reg)]
                  ['%car #f] ;; TODO
                  ['%cdr #f])
                (gen-tail)
