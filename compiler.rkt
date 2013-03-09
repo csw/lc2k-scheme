@@ -220,6 +220,9 @@
       (format "L~a" lambda-n)
     (set! lambda-n (add1 lambda-n))))
 
+(define (lambda-addr-label l)
+  (string-append "A" (substring l 1)))
+
 (define internal-n 0)
 
 (define (internal-label)
@@ -346,15 +349,18 @@
 (define (spill-code reg)
   (match reg
     [(list 'register n)
-     `((sw 7 ,n ,(+ n 1)))]))
+     `((sw sp-reg ,n ,(+ n 1)))]))
 
 (define (unspill-code reg)
   (match reg
     [(list 'register n)
-     `((lw 7 ,n ,(+ n 1)))]))
+     `((lw sp-reg ,n ,(+ n 1)))]))
+
+;; simple stack frame handling for now
+(define *frame-size* 16)
 
 (define (sethi-ullman-gen code-exp entry-label [env (global-env)])
-  (match-define (list 'code (list vars ...) body-exp)
+  (match-define (list 'code (list formals ...) body-exp)
                 code-exp)
   (let* ([need-table (sethi-ullman-label body-exp)]
          [need (lambda (exp)
@@ -385,7 +391,12 @@
              (lambda ()
                (cond
                 ;; expression in tail position, return
-                [(eq? cd 'return) (emit! 'jalr ret-reg call-reg)]
+                [(eq? cd 'return)
+                 ;; decrement stack pointer
+                 (emit! 'lw 0 call-reg (const-ref (- *frame-size*)))
+                 (emit! 'add sp-reg call-reg sp-reg)
+                 ;; and return
+                 (emit! 'jalr ret-reg call-reg)]
                 ;; continue directly to next label
                 [(eq? cd next-label) #t]
                 ;; jump to next label
@@ -464,6 +475,37 @@
                           (nand ,dest-reg ,dest-reg ,dest-reg)))])
              (gen-tail)
              dest-reg)]
+          ;; function call
+          [(list 'labelcall sym args ...)
+           ;; save our formals onto the stack
+           (for ([reg (in-range 1 (max (length args)
+                                       (length formals)))])
+             (emit-all! (spill-code reg)))
+           ;; marshal arguments
+           (for ([arg args]
+                 [reg (in-range 1 (length args))])
+             (let ([arg-done-label (internal-label)])
+               (cg arg (list 'register reg) arg-done-label arg-done-label)
+               ;; XXX: need to mark this variable to be loaded from
+               ;; the stack now
+               (emit! 'label arg-done-label)))
+           ;; XXX: not sure if this is the right way to handle n...
+           (let ([dest-reg (choose-reg (if (> (length args) 1)
+                                           -1
+                                           0))])
+             ;; TODO: check for tail call
+             (emit! 'lw 0 call-reg (lambda-addr-label
+                                    (cadr (env-lookup env sym))))
+             ;; save our return addr
+             (emit-all! (spill-code ret-reg))
+             ;; perform the call
+             (emit! 'jalr call-reg ret-reg)
+             ;; restore the return addr
+             (emit-all! (unspill-code ret-reg))
+             ;; put the return value where it belongs
+             (emit! 'add 0 1 dest-reg)
+             ;; XXX: lazily restore formals
+             )]
           ;; conditional
           [(list 'if if-pred if-then if-else)
            (let* ([true-label (internal-label)]
@@ -487,8 +529,11 @@
                (cg if-then dd cd next-label)))])))
     ;; function entry point
     (emit! 'label entry-label)
-    
+    ;; increment stack pointer
+    (emit! 'lw 0 call-reg (const-ref *frame-size*))
+    (emit! 'add sp-reg call-reg sp-reg)
     ;; begin-label
+    (emit! 'label begin-label)
     (cg body-exp '(register 1) 'return #f)
     (reverse insns)))
 
@@ -540,14 +585,20 @@
            (list (list lvars lexprs) ...)
            top-expr)
      (for ([lvar lvars]
-           [label (lambda-label)]
            [lexpr lexprs])
-       (env-define (global-env) lvar (list 'fun-label label))
-       (compile-fun lexpr label))
+       (let ([label (lambda-label)])
+         (env-define (global-env) lvar (list 'fun-label label))
+         (compile-fun lexpr label)))
      (let ([entry-label (lambda-label)])
        (compile-fun `(code () ,top-expr) entry-label)
        (for-each displayln (runtime-data entry-label)))])
-  (write-constant-defs))
+  (write-constant-defs)
+  (for ([label-entry (in-hash-values (env-dict (global-env)))]
+        #:when (tagged-list? 'fun-label label-entry))
+    (let ([label-name (cadr label-entry)])
+      (displayln (format "~a    .fill ~a"
+                         (lambda-addr-label label-name)
+                         label-name)))))
 
 ;; convert to our labels / code representation
 (define (compile-program prog)
