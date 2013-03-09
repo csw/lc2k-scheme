@@ -206,12 +206,13 @@
 (make-env #f)
 (define (global-env) (dict-ref environments 0))
 
-(for ([def `((empty . ,empty-list-v)
-             (#t . ,true-v)
-             (#f . ,false-v))])
-  (env-define (global-env)
-              (car def)
-              (cdr def)))
+(define (init-global-env)
+  (for ([def `((empty . (immediate ,empty-list-v))
+               (#t . (immediate ,true-v))
+               (#f . (immediate ,false-v)))])
+    (env-define (global-env)
+                (car def)
+                (cdr def))))
 
 (define lambda-n 0)
 
@@ -319,7 +320,9 @@
 
 (define reg-n (make-parameter 0))
 
-(define (sethi-ullman-label body-exp)
+(define (sethi-ullman-label code-exp)
+  (match-define (list 'code (list formals ...) body-exp)
+                code-exp)
   (let* ([need-table (make-hash)]
          [need (lambda (exp)
                  (hash-ref need-table exp))]
@@ -331,7 +334,9 @@
                [(? const?) ; 1 register to load the constant
                 1]
                [(? symbol?)
-                1]
+                (if (memq exp formals)
+                    0
+                    1)]
                [(list 'primcall prim arg)
                 (su-scan arg)
                 (max 1 (need arg))]
@@ -366,10 +371,11 @@
 ;; simple stack frame handling for now
 (define *frame-size* 16)
 
-(define (sethi-ullman-gen code-exp entry-label [env (global-env)])
+(define (sethi-ullman-gen code-exp entry-label)
   (match-define (list 'code (list formals ...) body-exp)
                 code-exp)
-  (let* ([need-table (sethi-ullman-label body-exp)]
+  (let* ([env (make-env (global-env))]
+         [need-table (sethi-ullman-label code-exp)]
          [need (lambda (exp)
                  (hash-ref need-table exp 0))]
          [exp-reg-table (make-hash)]
@@ -378,6 +384,9 @@
          [begin-label (internal-label)]
          [n 0]
          [k 3])
+    (for ([arg formals]
+          [reg (in-naturals 1)])
+      (env-define env arg (list 'register reg)))
     (define (emit! . args)
       (if (list? (car args))
           (apply emit! (car args))
@@ -389,11 +398,13 @@
              (lambda (delta)
                (unless (zero? delta)
                  (set! n (+ n delta)))
-               (when (<= n 0)
-                 (error "illegal register state!"))
                (let ([reg (if dd
                               dd
-                              (list 'register (- 6 n)))])
+                              (begin
+                                (when (<= n 0)
+                                  (error 'choose-reg
+                                         "illegal register state, n=~a" n))
+                                (list 'register (- 6 n))))])
                  (hash-set! exp-reg-table exp reg)
                  reg))]
             [gen-tail
@@ -456,13 +467,20 @@
              reg)]
           ;; symbol
           [(? symbol?)
-           (let* ([referent (env-lookup env exp)]
-                  [cname (const-ref referent)] ; XXX: support non-constants
-                  [reg (choose-reg 1)])
-             (emit! 'lw 0 reg cname
-                    (format "; r~a = ~a" (cadr reg) exp))
-             (gen-tail)
-             reg)]
+           (let* ([referent (env-lookup env exp)])
+             (match referent
+               ;; constant, from the constant pool
+               [(list 'immediate val)
+                (let* ([cname (const-ref referent)]
+                       [reg (choose-reg 1)])
+                  (emit! 'lw 0 reg cname
+                         (format "; r~a = ~a" (cadr reg) exp))
+                  (gen-tail)
+                  reg)]
+               ;; register variable (formal param)
+               [(list 'register num)
+                (gen-tail)
+                referent]))]
           ;; unary primitive
           [(list 'primcall prim arg)
            (let ([call-label (internal-label)])
@@ -498,7 +516,7 @@
              (emit-all! (spill-code (list 'register (- 6 reg)))))
            ;; marshal arguments
            (for ([arg args]
-                 [reg (in-range 1 (length args))])
+                 [reg (in-naturals 1)])
              (let ([arg-done-label (internal-label)])
                (cg arg (list 'register reg) arg-done-label arg-done-label)
                ;; XXX: need to mark this variable to be loaded from
@@ -599,6 +617,7 @@
         (format "entry   .fill ~a" entry-pt-label)))
 
 (define (compile-top prog)
+  (init-global-env)
   (define (compile-fun code label)
     (for-each displayln
               (gen-asm (sethi-ullman-gen (expand-prims code)
