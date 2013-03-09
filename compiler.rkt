@@ -119,7 +119,7 @@
 (define (app->args exp)
   (cdr exp))
 
-(define (expand-call exp)
+(define (expand-primcall exp)
   (let ([expanded
          (match exp
            [(list 'empty? v)        `(%eq? ,(expand-prims v) empty)]
@@ -132,14 +132,20 @@
            ;; simple but unsafe versions of common functions
            [(list 'car v)           `(%car ,(expand-prims v))]
            [(list 'cdr v)           `(%cdr ,(expand-prims v))]
+           [(list '+ x y)           `(%add ,(expand-prims x)
+                                           ,(expand-prims y))]
            [(list 'bitwise-and x y) `(%band ,(expand-prims x)
-                                            ,(expand-prims y))]
+                                               ,(expand-prims y))]
            [else #f])])
     (if expanded
-        (if (eq? exp expanded)
-            expanded
-            (expand-call expanded))
-        (cons (car exp) (map expand-prims (cdr exp))))))
+        (cons 'primcall (or (expand-primcall expanded) expanded))
+        #f)))
+
+(define (expand-call exp)
+  (or (expand-primcall exp)
+      (cons 'labelcall
+            (cons (car exp)
+                  (map expand-prims (cdr exp))))))
 
 (define (expand-if-pred exp)
   (let ([expanded (expand-prims exp)])
@@ -323,10 +329,10 @@
                 1]
                [(? symbol?)
                 1]
-               [(? primcall? (list prim arg))
+               [(list 'primcall prim arg)
                 (su-scan arg)
                 (max 1 (need arg))]
-               [(? primcall? (list prim arg1 arg2))
+               [(list 'primcall prim arg1 arg2)
                 (for-each su-scan (cdr exp))
                 (if (= (need arg1) (need arg2))
                     (add1 (need arg1))
@@ -435,7 +441,7 @@
              (gen-tail)
              reg)]
           ;; unary primitive
-          [(? primcall? (list prim arg))
+          [(list 'primcall prim arg)
            (let ([call-label (internal-label)])
              (let ([acode (cg arg #f call-label call-label)]
                    [dest-reg (choose-reg 0)])
@@ -444,14 +450,14 @@
                  ['%cdr #f])))
            ]
           ;; binary primitive
-          [(? primcall? (list prim arg1 arg2))
+          [(list 'primcall prim arg1 arg2)
            (let* ([call-label (internal-label)]
                   [child-regs (gen-children arg1 arg2 call-label)]
                   [t1 (car child-regs)]
                   [t2 (cadr child-regs)]
                   [dest-reg (choose-reg 0)]) ;; decr. in gen-children
              (match prim
-               ['+ (emit! 'add t1 t2 dest-reg)]
+               ['%add  (emit! 'add t1 t2 dest-reg)]
                ['%nand (emit! 'nand t1 t2 dest-reg)]
                ['%band (emit-all!
                         `((nand ,t1 ,t2 ,dest-reg)
@@ -465,10 +471,10 @@
                   [branch-label (internal-label)]
                   [registers
                    (match if-pred
-                     [(list '%zero? pa0) ;; %zero v
+                     [(list 'primcall '%zero? pa0) ;; %zero v
                       (list '(register 0)
                             (cg pa0 #f branch-label branch-label))]
-                     [(list '%eq? pa0 pa1)
+                     [(list 'primcall '%eq? pa0 pa1)
                       (gen-children pa0 pa1 branch-label)])])
              (emit! 'label branch-label)
              (emit! 'beq (car registers) (cadr registers) true-label)
