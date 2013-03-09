@@ -42,4 +42,7 @@
                       373)))
     (test-section "Conses")
     ;;(test-case '(empty? empty) #t)
+    (test-section "Functions")
+    (test-case '((define (foo) 5) (+ 1 (foo))))
+    (test-case '((define (foo n) (+ 5 n)) (+ 1 (foo 7))))
     (displayln "All tests succeeded.")))

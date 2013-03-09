@@ -135,7 +135,10 @@
            [(list '+ x y)           `(%add ,(expand-prims x)
                                            ,(expand-prims y))]
            [(list 'bitwise-and x y) `(%band ,(expand-prims x)
-                                               ,(expand-prims y))]
+                                            ,(expand-prims y))]
+           [(list 'bitwise-or x y) `(%nand (bitwise-not ,(expand-prims x)
+                                                        ,(expand-prims y)))]
+           [(list 'bitwise-not x)  `(%bnot ,(expand-prims x))]
            [else #f])])
     (if expanded
         (cons 'primcall (or (expand-primcall expanded) expanded))
@@ -432,6 +435,9 @@
             [gen-children
              (lambda (cl cr body-label)
                (cond
+                ;; both already in registers
+                [(and (= (need cl) 0) (= (need cr) 0))
+                 (list (env-lookup env cl) (env-lookup env cr))]
                 ;; both children need >= k registers
                 [(and (>= (need cl) k) (>= (need cr) k))
                  (let* ([spill-label (internal-label)]
@@ -496,9 +502,11 @@
              (let ([acode (cg arg #f call-label call-label)]
                    [dest-reg (choose-reg 0)])
                (match prim
+                 ['%bnot (emit! 'nand arg arg dest-reg)]
                  ['%car #f] ;; TODO
-                 ['%cdr #f])))
-           ]
+                 ['%cdr #f])
+               (gen-tail)
+               dest-reg))]
           ;; binary primitive
           [(list 'primcall prim arg1 arg2)
            (let* ([call-label (internal-label)]
@@ -623,6 +631,8 @@
 
 (define (runtime-data entry-pt-label)
   (list "stack   .fill 65535"
+        "heapS   .fill 8192"
+        "heap    .fill 8192"
         "SCMrv   .fill 559038737"
         (format "entry   .fill ~a" entry-pt-label)))
 
