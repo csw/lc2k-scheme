@@ -340,6 +340,11 @@
                 (if (= (need arg1) (need arg2))
                     (add1 (need arg1))
                     (apply max 1 (map need (cdr exp))))]
+               ;; function calls
+               ;; XXX: this may be totally bogus
+               [(list 'labelcall fun args ...)
+                (for-each su-scan args)
+                (apply min 2 (map need args))]
                [(list 'if if-pred if-then if-else) ;; sequentially
                 (for-each su-scan (cdr exp))       ;; if-pred +1, then one
                 (apply max 1 (map need (cdr exp)))])))
@@ -349,12 +354,14 @@
 (define (spill-code reg)
   (match reg
     [(list 'register n)
-     `((sw sp-reg ,n ,(+ n 1)))]))
+     `((sw ,sp-reg ,n ,(+ n 1)
+           ,(format " ; save r~a" n)))]))
 
 (define (unspill-code reg)
   (match reg
     [(list 'register n)
-     `((lw sp-reg ,n ,(+ n 1)))]))
+     `((lw ,sp-reg ,n ,(+ n 1)
+           ,(format " ; restore r~a" n)))]))
 
 ;; simple stack frame handling for now
 (define *frame-size* 16)
@@ -373,7 +380,7 @@
          [k 3])
     (define (emit! . args)
       (if (list? (car args))
-          (emit! (car args))
+          (apply emit! (car args))
           (set! insns (cons args insns))))
     (define (emit-all! . l)
       (for-each emit! l))
@@ -382,6 +389,8 @@
              (lambda (delta)
                (unless (zero? delta)
                  (set! n (+ n delta)))
+               (when (<= n 0)
+                 (error "illegal register state!"))
                (let ([reg (if dd
                               dd
                               (list 'register (- 6 n)))])
@@ -392,11 +401,12 @@
                (cond
                 ;; expression in tail position, return
                 [(eq? cd 'return)
-                 ;; decrement stack pointer
-                 (emit! 'lw 0 call-reg (const-ref (- *frame-size*)))
-                 (emit! 'add sp-reg call-reg sp-reg)
+                 ;; increment stack pointer
+                 (emit! 'lw 0 call-reg (const-ref *frame-size*))
+                 (emit! 'add sp-reg call-reg sp-reg
+                        (format "; SP += ~a" *frame-size*))
                  ;; and return
-                 (emit! 'jalr ret-reg call-reg)]
+                 (emit! 'jalr ret-reg call-reg "; return")]
                 ;; continue directly to next label
                 [(eq? cd next-label) #t]
                 ;; jump to next label
@@ -440,7 +450,8 @@
            (let* ([imm (immediate-rep exp)]
                   [cname (const-ref imm)]
                   [reg (choose-reg 1)])
-             (emit! 'lw 0 reg cname)
+             (emit! 'lw 0 reg cname
+                    (format "; r~a = ~a" (cadr reg) exp))
              (gen-tail)
              reg)]
           ;; symbol
@@ -448,7 +459,8 @@
            (let* ([referent (env-lookup env exp)]
                   [cname (const-ref referent)] ; XXX: support non-constants
                   [reg (choose-reg 1)])
-             (emit! 'lw 0 reg cname)
+             (emit! 'lw 0 reg cname
+                    (format "; r~a = ~a" (cadr reg) exp))
              (gen-tail)
              reg)]
           ;; unary primitive
@@ -480,7 +492,10 @@
            ;; save our formals onto the stack
            (for ([reg (in-range 1 (max (length args)
                                        (length formals)))])
-             (emit-all! (spill-code reg)))
+             (emit-all! (spill-code (list 'register reg))))
+           ;; save live temporaries
+           (for ([reg (in-range 1 (add1 n))])
+             (emit-all! (spill-code (list 'register (- 6 reg)))))
            ;; marshal arguments
            (for ([arg args]
                  [reg (in-range 1 (length args))])
@@ -491,21 +506,28 @@
                (emit! 'label arg-done-label)))
            ;; XXX: not sure if this is the right way to handle n...
            (let ([dest-reg (choose-reg (if (> (length args) 1)
-                                           -1
-                                           0))])
+                                           0
+                                           1))]
+                 ;; or this
+                 [addr-reg (choose-reg 1)])
              ;; TODO: check for tail call
-             (emit! 'lw 0 call-reg (lambda-addr-label
+             (emit! 'lw 0 addr-reg (lambda-addr-label
                                     (cadr (env-lookup env sym))))
              ;; save our return addr
-             (emit-all! (spill-code ret-reg))
+             (emit-all! (spill-code (list 'register ret-reg)))
              ;; perform the call
-             (emit! 'jalr call-reg ret-reg)
+             (emit! 'jalr addr-reg ret-reg (format "; call ~a" sym))
              ;; restore the return addr
-             (emit-all! (unspill-code ret-reg))
+             (emit-all! (unspill-code (list 'register ret-reg)))
              ;; put the return value where it belongs
              (emit! 'add 0 1 dest-reg)
+             (set! n (- n 1))
+             ;; restore temporaries
+             (for ([reg (in-range 1 n)])
+               (emit-all! (unspill-code (list 'register (- 6 reg)))))
              ;; XXX: lazily restore formals
-             )]
+             (gen-tail)
+             dest-reg)]
           ;; conditional
           [(list 'if if-pred if-then if-else)
            (let* ([true-label (internal-label)]
@@ -527,11 +549,13 @@
                (set! n base-n)
                (emit! 'label true-label)
                (cg if-then dd cd next-label)))])))
+    (emit! 'noop (format "; ~v" code-exp))
     ;; function entry point
     (emit! 'label entry-label)
-    ;; increment stack pointer
-    (emit! 'lw 0 call-reg (const-ref *frame-size*))
-    (emit! 'add sp-reg call-reg sp-reg)
+    ;; decrement stack pointer
+    (emit! 'lw 0 call-reg (const-ref (- *frame-size*)))
+    (emit! 'add sp-reg call-reg sp-reg
+           (format "; SP -= ~a" *frame-size*))
     ;; begin-label
     (emit! 'label begin-label)
     (cg body-exp '(register 1) 'return #f)
@@ -601,22 +625,25 @@
                          label-name)))))
 
 ;; convert to our labels / code representation
-(define (compile-program prog)
+(define (transform-program prog)
   (let*-values ([(defs rest) (partition (lambda (e)
                                           (tagged-list? 'define e))
                                         (if (list? prog)
                                             prog
                                             (list prog)))]
                 [(label-defs) (for/list ([def defs])
-                              (match def
-                                [(list 'define
-                                       (list name formals ...)
-                                       body)
-                                 `(,name (code ,@formals) body)]))]
+                                (match def
+                                  [(list 'define
+                                         (list name formals ...)
+                                         body)
+                                   `(,name (code ,formals ,body))]))]
                 [(toplevel) (if (and (pair? rest) (empty? (cdr rest)))
                                 (car rest)
                                 rest)])
-    (compile-top `(labels ,label-defs ,toplevel))))
+    `(labels ,label-defs ,toplevel)))
+
+(define (compile-program prog)
+  (compile-top (transform-program prog)))
 
 (define (compile-to x path)
   (with-output-to-file path
