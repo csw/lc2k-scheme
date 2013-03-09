@@ -151,6 +151,7 @@
   (let ([expanded (expand-prims exp)])
     (match expanded
       [(list-rest (? prim-predicate?) ... args) expanded]
+      ;; XXX: review this
       [else `(%eq? #t ,expanded)])))
 
 (define (expand-prims exp)
@@ -339,7 +340,9 @@
                     1)]
                [(list 'primcall prim arg)
                 (su-scan arg)
-                (max 1 (need arg))]
+                (if (memq prim prim-predicates)
+                    (need arg)
+                    (max 1 (need arg)))]
                [(list 'primcall prim arg1 arg2)
                 (for-each su-scan (cdr exp))
                 (if (= (need arg1) (need arg2))
@@ -349,7 +352,7 @@
                ;; XXX: this may be totally bogus
                [(list 'labelcall fun args ...)
                 (for-each su-scan args)
-                (apply min 2 (map need args))]
+                (apply min 1 (map need args))]
                [(list 'if if-pred if-then if-else) ;; sequentially
                 (for-each su-scan (cdr exp))       ;; if-pred +1, then one
                 (apply max 1 (map need (cdr exp)))])))
@@ -394,11 +397,15 @@
     (define (emit-all! . l)
       (for-each emit! l))
     (define (cg exp dd cd next-label)
+      (define (set-n! new-n)
+        (when (< new-n 0)
+          (error 'set-n! "Illegal new register state, n=~a" new-n))
+        (set! n new-n))
       (let ([choose-reg
-             (lambda (delta)
+             (lambda (delta (use-dd #t))
                (unless (zero? delta)
-                 (set! n (+ n delta)))
-               (let ([reg (if dd
+                 (set-n! (+ n delta)))
+               (let ([reg (if (and dd use-dd)
                               dd
                               (begin
                                 (when (<= n 0)
@@ -430,7 +437,7 @@
                  (let* ([spill-label (internal-label)]
                         [unspill-label (internal-label)]
                         [r-reg (cg cr #f spill-label spill-label)])
-                   (set! n (- n 1))
+                   (set-n! (- n 1))
                    (emit! 'label spill-label)
                    (emit-all! (spill-code r-reg))
                    (let ([l-reg (cg cl #f unspill-label unspill-label)])
@@ -445,7 +452,7 @@
                    (begin0
                        (list l-reg
                              (cg cr #f body-label body-label))
-                     (set! n (- n 1))))]
+                     (set-n! (- n 1))))]
                 ;; left one first
                 [else
                  (let* ([l-label (internal-label)]
@@ -454,7 +461,9 @@
                    (begin0
                        (list (cg cl #f body-label body-label)
                              r-reg)
-                     (set! n (- n 1))))]))])
+                     (set-n! (- n 1))))]))])
+        ;;(trace choose-reg)
+        ;;(trace set-n!)
         (match exp
           ;; constant reference
           [(? const?)
@@ -525,21 +534,20 @@
            ;; XXX: not sure if this is the right way to handle n...
            (let ([dest-reg (choose-reg (if (> (length args) 1)
                                            0
-                                           1))]
-                 ;; or this
-                 [addr-reg (choose-reg 1)])
+                                           1)
+                                       #f)])
              ;; TODO: check for tail call
-             (emit! 'lw 0 addr-reg (lambda-addr-label
+             (emit! 'lw 0 dest-reg (lambda-addr-label
                                     (cadr (env-lookup env sym))))
              ;; save our return addr
              (emit-all! (spill-code (list 'register ret-reg)))
              ;; perform the call
-             (emit! 'jalr addr-reg ret-reg (format "; call ~a" sym))
+             (emit! 'jalr dest-reg ret-reg (format "; call ~a" sym))
              ;; restore the return addr
              (emit-all! (unspill-code (list 'register ret-reg)))
              ;; put the return value where it belongs
              (emit! 'add 0 1 dest-reg)
-             (set! n (- n 1))
+             (set-n! (- n 1))
              ;; restore temporaries
              (for ([reg (in-range 1 n)])
                (emit-all! (unspill-code (list 'register (- 6 reg)))))
@@ -560,13 +568,15 @@
                       (gen-children pa0 pa1 branch-label)])])
              (emit! 'label branch-label)
              (emit! 'beq (car registers) (cadr registers) true-label)
-             (let ([base-n (- n 1)])
-               (set! n base-n)
+             (let ([base-n (- n (need if-pred))])
+               (set-n! base-n)
                (emit! 'label false-label)
                (cg if-else dd cd true-label)
-               (set! n base-n)
+               (set-n! base-n)
                (emit! 'label true-label)
                (cg if-then dd cd next-label)))])))
+    ;;(trace cg)
+    ;;(eprintf "need: ~v" need-table)
     (emit! 'noop (format "; ~v" code-exp))
     ;; function entry point
     (emit! 'label entry-label)
