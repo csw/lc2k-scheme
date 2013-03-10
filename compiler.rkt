@@ -28,6 +28,7 @@
 (define empty-tag    #b01101111)
 (define empty-list-v (arithmetic-shift empty-tag tag-shift))
 (define pointer-mask #x0000FFFF)
+(define cons-tag     (arithmetic-shift #b01000111 tag-shift))
 
 (define (tag-bits-old v)
   (bitwise-bit-field v tag-shift tag-end))
@@ -127,12 +128,12 @@
            [(list 'pair? v)         `(%tagged? list-tag ,(expand-prims v))]
            [(list '%tagged? tag v)  `(%zero? (%band tag ,(expand-prims v)))]
            [(list '%ptr v)          `(%and ,(expand-prims v) pointer-mask)]
-           [(list '%car v)          `(%load (%ptr ,(expand-prims v)) 1)]
-           [(list '%cdr v)          `(%load (%ptr ,(expand-prims v)) 2)]
+           ;[(list '%car v)          `(%load (%ptr ,(expand-prims v)) 0)]
+           ;[(list '%cdr v)          `(%load (%ptr ,(expand-prims v)) 1)]
            [(list 'zero? v)         `(%zero? ,(expand-prims v))]
            ;; simple but unsafe versions of common functions
-           [(list 'car v)           `(%car ,(expand-prims v))]
-           [(list 'cdr v)           `(%cdr ,(expand-prims v))]
+           ;[(list 'car v)           `(%car ,(expand-prims v))]
+           ;[(list 'cdr v)           `(%cdr ,(expand-prims v))]
            [(list '+ x y)           `(%add ,(expand-prims x)
                                            ,(expand-prims y))]
            [(list 'bitwise-and x y) `(%band ,(expand-prims x)
@@ -359,10 +360,17 @@
                ;; XXX: this may be totally bogus
                [(list 'labelcall fun args ...)
                 (for-each su-scan args)
-                (apply min 1 (map need args))]
+                (max 1 (foldl + 0 (map (lambda (arg)
+                                         (min 1 (need arg)))
+                                       args)))]
                [(list 'if if-pred if-then if-else) ;; sequentially
-                (for-each su-scan (cdr exp))       ;; if-pred +1, then one
-                (apply max 1 (map need (cdr exp)))])))
+                (match if-pred
+                  [(list 'primcall '%zero? pa0) ;; %zero v
+                   (su-scan pa0)
+                   (need pa0)]
+                  [(list 'primcall '%eq? pa0 pa1)
+                   (for-each su-scan (list pa0 pa1))
+                   (apply max 1 (map need (list pa0 pa1)))])])))
     (su-scan body-exp)
     need-table))
 
@@ -380,6 +388,8 @@
 
 ;; simple stack frame handling for now
 (define *frame-size* 16)
+
+(define *debug-codegen* #f)
 
 (define (sethi-ullman-gen code-exp entry-label)
   (match-define (list 'code (list formals ...) body-exp)
@@ -472,8 +482,9 @@
                        (list (cg cl #f body-label body-label)
                              r-reg)
                      (set-n! (- n 1))))]))])
-        ;;(trace choose-reg)
-        ;;(trace set-n!)
+        (when *debug-codegen*
+          (trace choose-reg)
+          (trace set-n!))
         (match exp
           ;; constant reference
           [(? const?)
@@ -490,7 +501,7 @@
              (match referent
                ;; constant, from the constant pool
                [(list 'immediate val)
-                (let* ([cname (const-ref referent)]
+                (let* ([cname (const-ref val)]
                        [reg (choose-reg 1)])
                   (emit! 'lw 0 reg cname
                          (format "; r~a = ~a" (cadr reg) exp))
@@ -559,11 +570,14 @@
              (emit-all! (unspill-code (list 'register ret-reg)))
              ;; put the return value where it belongs
              (emit! 'add 0 1 dest-reg)
-             (set-n! (- n 1))
+             ;;(set-n! (- n 1))
              ;; restore temporaries
              (for ([reg (in-range 1 n)])
                (emit-all! (unspill-code (list 'register (- 6 reg)))))
              ;; XXX: lazily restore formals
+             (for ([reg (in-range 1 (max (length args)
+                                         (length formals)))])
+               (emit-all! (unspill-code (list 'register reg))))
              (gen-tail)
              dest-reg)]
           ;; conditional
@@ -587,8 +601,9 @@
                (set-n! base-n)
                (emit! 'label true-label)
                (cg if-then dd cd next-label)))])))
-    ;;(trace cg)
-    ;;(eprintf "need: ~v" need-table)
+    (when *debug-codegen*
+      (trace cg)
+      (eprintf "need: ~a\n" (pretty-format need-table)))
     (emit! 'noop (format "; ~v" code-exp))
     ;; function entry point
     (emit! 'label entry-label)
@@ -631,17 +646,49 @@
     "        lw   0 7 stack"
     "        jalr 5 6"
     "        sw   0 1 SCMrv"
-    "SCMh    halt"))
+    "SCMh    halt"
+    "        noop"
+    "Lcons   lw   0 5 heap"
+    "        lw   0 4 consS"
+    "        add  4 5 4"
+    "        sw   0 4 heap"
+    "        sw   4 1 0"
+    "        sw   4 2 1"
+    "        lw   0 5 ctag"
+    "        add  4 5 1"
+    "        jalr 6 5"
+    "Lcar    lw   0 5 pmask"
+    "        nand 1 5 1"
+    "        nand 1 1 1"
+    "        lw   1 1 0"
+    "        jalr 6 5"
+    "Lcdr    lw   0 5 pmask"
+    "        nand 1 5 1"
+    "        nand 1 1 1"
+    "        lw   1 1 1"
+    "        jalr 6 5"))
 
 (define (runtime-data entry-pt-label)
   (list "stack   .fill 65535"
         "heapS   .fill 8192"
         "heap    .fill 8192"
         "SCMrv   .fill 559038737"
-        (format "entry   .fill ~a" entry-pt-label)))
+        "consS   .fill 2"
+        (format "entry   .fill ~a" entry-pt-label)
+        (format "ctag    .fill ~a" cons-tag)
+        (format "pmask   .fill ~a" pointer-mask)))
+
+(define *asm-functions*
+  '((cons . "Lcons")
+    (car  . "Lcar")
+    (cdr  . "Lcdr")))
 
 (define (compile-top prog)
   (init-global-env)
+  (for ([fdef *asm-functions*])
+    (env-define (global-env)
+                (car fdef)
+                (list 'fun-label (cdr fdef))))
   (define (compile-fun code label)
     (for-each displayln
               (gen-asm (sethi-ullman-gen (expand-prims code)
