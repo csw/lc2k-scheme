@@ -410,7 +410,7 @@
           [(? const?)
            (let* ([imm (immediate-rep exp)]
                   [cname (const-ref imm)]
-                  [reg (alloc-temp)])
+                  [reg (or dd (alloc-temp))])
              (emit! 'lw 0 reg cname
                     (format "; r~a = ~a" (cadr reg) exp))
              reg)]
@@ -421,7 +421,7 @@
                ;; constant, from the constant pool
                [(list 'immediate val)
                 (let* ([cname (const-ref val)]
-                       [reg (alloc-temp)])
+                       [reg (or dd (alloc-temp))])
                   (emit! 'lw 0 reg cname
                          (format "; r~a = ~a" (cadr reg) exp))
                   reg)]
@@ -430,38 +430,32 @@
                 referent]))]
           ;; unary primitive
           [(list 'primcall prim arg)
-           (let ([call-label (internal-label)])
-             (let ([arg-reg (cg arg #f call-label call-label)]
-                   [dest-reg (alloc-temp)])
-               (match prim
-                 ['%bnot (emit! 'nand arg-reg arg-reg dest-reg)]
-                 ['%car #f] ;; TODO
-                 ['%cdr #f])
-               dest-reg))]
+           (let ([op-label (internal-label)]
+                 [dest (or dd (alloc-temp))])
+             (cg arg #f op-label op-label)
+             (emit! 'label op-label)
+             (match prim
+               ['%bnot (emit! 'nand dest dest dest)]
+               ['%car #f] ;; TODO
+               ['%cdr #f])
+             dd)]
           ;; binary primitive
           [(list 'primcall prim arg1 arg2)
-           (let* ([call-label (internal-label)]
-                  [child-regs (gen-children arg1 arg2 call-label)]
+           (let* ([op-label (internal-label)]
+                  [child-regs (gen-children arg1 arg2 op-label)]
                   [t1 (car child-regs)]
                   [t2 (cadr child-regs)]
-                  [dest-reg (alloc-temp)]) ;; decr. in gen-children
+                  [dest (or dd (alloc-temp))])
+             (emit! 'label op-label)
              (match prim
-               ['%add  (emit! 'add t1 t2 dest-reg)]
-               ['%nand (emit! 'nand t1 t2 dest-reg)]
+               ['%add  (emit! 'add t1 t2 dest)]
+               ['%nand (emit! 'nand t1 t2 dest)]
                ['%band (emit-all!
-                        `((nand ,t1 ,t2 ,dest-reg)
-                          (nand ,dest-reg ,dest-reg ,dest-reg)))])
-             dest-reg)]
+                        `((nand ,t1 ,t2 ,dest)
+                          (nand ,dest ,dest ,dest)))])
+             dest)]
           ;; function call
           [(list 'labelcall sym args ...)
-           ;; save our formals onto the stack
-           ;; (for ([reg (in-range 1 (max (length args)
-           ;;                             (length formals)))])
-           ;;   (emit-all! (spill-code (list 'register reg))))
-           ;; save live temporaries
-           ;; (for ([reg (in-range 1 (add1 n))])
-           ;;   (emit-all! (spill-code (list 'register (- 6 reg)))))
-
            ;; marshal arguments
            (let ([arg-temps
                   (for/list ([arg args])
@@ -469,33 +463,17 @@
                       (begin0
                           (cg arg #f arg-done-label arg-done-label)
                         (emit! 'label arg-done-label))))]
-                 [dest-reg (alloc-temp)]
+                 [dest-reg (or dd (alloc-temp))]
                  [target (lambda-addr-label (cadr (env-lookup env sym)))])
              ;; TODO: check for tail call
              (apply emit! 'labelcall dest-reg target arg-temps)
-             ;;(emit! 'lw 0 dest-reg target)
-             ;; save our return addr
-             ;;(emit-all! (spill-code (list 'register ret-reg)))
-             ;; perform the call
-             ;;(emit! 'jalr dest-reg ret-reg (format "; call ~a" sym))
-             ;; restore the return addr
-             ;;(emit-all! (unspill-code (list 'register ret-reg)))
-             ;; put the return value where it belongs
-             ;;(emit! 'add 0 1 dest-reg)
-             ;;(set-n! (- n 1))
-             ;; restore temporaries
-             ;;(for ([reg (in-range 1 n)])
-             ;;  (emit-all! (unspill-code (list 'register (- 6 reg)))))
-             ;; XXX: lazily restore formals
-             ;; (for ([reg (in-range 1 (max (length args)
-             ;;                             (length formals)))])
-             ;;   (emit-all! (unspill-code (list 'register reg))))
              dest-reg)]
           ;; conditional
           [(list 'if if-pred if-then if-else)
            (let* ([true-label (internal-label)]
                   [false-label (internal-label)]
                   [branch-label (internal-label)]
+                  [dest (or dd (alloc-temp))]
                   [registers
                    (match if-pred
                      [(list 'primcall '%zero? pa0) ;; %zero v
@@ -507,11 +485,12 @@
              (emit! 'beq (car registers) (cadr registers) true-label
                     (format "; ~v" exp))
              (emit! 'label false-label)
-             (cg if-else dd cd true-label)
+             (cg if-else dest cd true-label)
              (emit! 'label true-label)
-             (cg if-then dd cd next-label))]))
+             (cg if-then dest cd next-label))]))
       (when *debug-codegen*
-        (trace alloc-temp))
+        (trace alloc-temp)
+        (trace cg))
       (let ([result (gen-code)])
         (cond
          [(tagged-list? 'if exp) #f]
@@ -536,7 +515,8 @@
     ;;        (format "; SP -= ~a" *frame-size*))
     ;; begin-label
     (emit! 'label begin-label)
-    (cg body-exp #f 'return #f)
+    (let ([temp (alloc-temp)])
+      (cg body-exp temp 'return #f))
     (reverse insns)))
 
 (define (ir-dest stmt)
