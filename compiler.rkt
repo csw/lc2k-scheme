@@ -1,10 +1,26 @@
 #lang racket
 
+;; compiler.rkt
+;; Scheme compiler for the LC2K
+;;
+;; Clayton Wheeler <cswh@umich.edu>, 2013
+
 (require racket/dict)
 (require racket/format)
 (require racket/trace)
 
 (provide compile-program compile-to *lc2k-rv* decode-immediate)
+
+;; The LC2K has 8 registers, used as follows.
+;; 
+;; r0: always 0
+;; r1: return value, first argument
+;; r2: second argument
+;; r3: third argument
+;; r4: scratch
+;; r5: scratch
+;; r6: return address
+;; r7: stack pointer
 
 (define sp-reg 7)
 (define call-reg 5)
@@ -13,6 +29,27 @@
 (define rv-reg 1)
 
 (define *lc2k-rv* "SCMrv")
+
+;;;; Type tags
+
+;; Two high bits are reserved to distinguish fixnums from other
+;; types. A word whose two most significant bits are 01 is an
+;; immediate Scheme value or a tagged pointer.
+;;
+;; Immediates:
+;;   fixnums, -2^31 to 2^30 - 1
+;;   booleans: #t and #f
+;;   chars
+;;   The empty list: empty
+;;
+;; Pointer types:
+;;   conses
+;;
+;; Unimplemented:
+;;   functions
+;;   vectors
+;;   symbols
+;;   strings
 
 (define tagged-mask  #b11000000000000000000000000000000)
 (define tagged-tag   #b01000000000000000000000000000000)
@@ -98,28 +135,29 @@
 (define (ref? exp)
   (symbol? exp))
 
-                                        ; if? : exp -> boolean
+;; if? : exp -> boolean
 (define (if? exp)
   (tagged-list? 'if exp))
 
-                                        ; if->condition : if-exp -> exp
+;; if->condition : if-exp -> exp
 (define (if->condition exp)
   (cadr exp))
 
-                                        ; if->then : if-exp -> exp
+;; if->then : if-exp -> exp
 (define (if->then exp)
   (caddr exp))
 
-                                        ; if->else : if-exp -> exp
+;; if->else : if-exp -> exp
 (define (if->else exp)
   (cadddr exp))
 (define (app? exp)
   (pair? exp))
-                                        ; app->fun : app-exp -> exp
+
+;; app->fun : app-exp -> exp
 (define (app->fun exp)
   (car exp))
 
-                                        ; app->args : app-exp -> list[exp]
+;; app->args : app-exp -> list[exp]
 (define (app->args exp)
   (cdr exp))
 
@@ -130,12 +168,12 @@
            [(list 'pair? v)         `(%tagged? list-tag ,(expand-prims v))]
            [(list '%tagged? tag v)  `(%zero? (%band tag ,(expand-prims v)))]
            [(list '%ptr v)          `(%and ,(expand-prims v) pointer-mask)]
-           ;[(list '%car v)          `(%load (%ptr ,(expand-prims v)) 0)]
-           ;[(list '%cdr v)          `(%load (%ptr ,(expand-prims v)) 1)]
+           ;;[(list '%car v)          `(%load (%ptr ,(expand-prims v)) 0)]
+           ;;[(list '%cdr v)          `(%load (%ptr ,(expand-prims v)) 1)]
            [(list 'zero? v)         `(%zero? ,(expand-prims v))]
            ;; simple but unsafe versions of common functions
-           ;[(list 'car v)           `(%car ,(expand-prims v))]
-           ;[(list 'cdr v)           `(%cdr ,(expand-prims v))]
+           ;;[(list 'car v)           `(%car ,(expand-prims v))]
+           ;;[(list 'cdr v)           `(%cdr ,(expand-prims v))]
            [(list '+ x y)           `(%add ,(expand-prims x)
                                            ,(expand-prims y))]
            [(list 'bitwise-and x y) `(%band ,(expand-prims x)
@@ -163,7 +201,7 @@
 
 (define (expand-prims exp)
   (cond
-   ; Core forms:
+   ;; Core forms:
    ((tagged-list? 'code exp) `(code ,(cadr exp) ,(expand-prims (caddr exp))))
    ((const? exp)      exp)
    ((prim? exp)       exp)
@@ -510,10 +548,6 @@
     (emit! 'prologue)
     (emit! 'bind 'return-addr 6)
     ;; decrement stack pointer
-    ;;(emit! 'lw 0 call-reg (const-ref (- *frame-size*)))
-    ;; (emit! 'add sp-reg call-reg sp-reg
-    ;;        (format "; SP -= ~a" *frame-size*))
-    ;; begin-label
     (emit! 'label begin-label)
     (let ([temp (alloc-temp)])
       (cg body-exp temp 'return #f))
@@ -925,9 +959,6 @@
         (format "entry   .fill ~a" entry-pt-label)
         (format "ctag    .fill ~a" cons-tag)
         (format "pmask   .fill ~a" pointer-mask)))
-
-(define (sethi-ullman-gen a b)
-  #f)
 
 (define (compile-top prog)
   (init-global-env)
