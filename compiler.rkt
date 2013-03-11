@@ -8,6 +8,7 @@
 
 (define sp-reg 7)
 (define call-reg 5)
+(define spill-reg 5)
 (define ret-reg 6)
 (define rv-reg 1)
 
@@ -37,7 +38,8 @@
   (bitwise-and v tag-mask))
 
 (define (decode-immediate v)
-  (if (= tagged-tag (bitwise-and tagged-mask v))
+  (if (= tagged-tag
+         (bitwise-and tagged-mask v))
       (let ([tag (tag-bits v)])
         (cond
          [(= v true-v) #t]
@@ -250,6 +252,11 @@
                                                  (~a imm))
                                            "  ")))))
 
+(define *asm-functions*
+  '((cons . "Lcons")
+    (car  . "Lcar")
+    (cdr  . "Lcdr")))
+
 (define (init-global-env)
   (set! constants (make-hash))
   (set! constant-n 0)
@@ -258,7 +265,12 @@
                (#f . (immediate ,false-v)))])
     (env-define (global-env)
                 (car def)
-                (cdr def))))
+                (cdr def)))
+  (for ([fdef *asm-functions*])
+    (env-define (global-env)
+                (car fdef)
+                (list 'fun-label (cdr fdef)))))
+(init-global-env)
 
 
 ;; ; allocate-environment : list[symbol] -> env-id
@@ -329,51 +341,6 @@
 
 (define reg-n (make-parameter 0))
 
-(define (sethi-ullman-label code-exp)
-  (match-define (list 'code (list formals ...) body-exp)
-                code-exp)
-  (let* ([need-table (make-hash)]
-         [need (lambda (exp)
-                 (hash-ref need-table exp))]
-         [need! (lambda (exp n)
-                  (hash-set! need-table exp n))])
-    (define (su-scan exp)
-      (need! exp
-             (match exp
-               [(? const?) ; 1 register to load the constant
-                1]
-               [(? symbol?)
-                (if (memq exp formals)
-                    0
-                    1)]
-               [(list 'primcall prim arg)
-                (su-scan arg)
-                (if (memq prim prim-predicates)
-                    (need arg)
-                    (max 1 (need arg)))]
-               [(list 'primcall prim arg1 arg2)
-                (for-each su-scan (cdr exp))
-                (if (= (need arg1) (need arg2))
-                    (add1 (need arg1))
-                    (apply max 1 (map need (cdr exp))))]
-               ;; function calls
-               ;; XXX: this may be totally bogus
-               [(list 'labelcall fun args ...)
-                (for-each su-scan args)
-                (max 1 (foldl + 0 (map (lambda (arg)
-                                         (min 1 (need arg)))
-                                       args)))]
-               [(list 'if if-pred if-then if-else) ;; sequentially
-                (match if-pred
-                  [(list 'primcall '%zero? pa0) ;; %zero v
-                   (su-scan pa0)
-                   (need pa0)]
-                  [(list 'primcall '%eq? pa0 pa1)
-                   (for-each su-scan (list pa0 pa1))
-                   (apply max 1 (map need (list pa0 pa1)))])])))
-    (su-scan body-exp)
-    need-table))
-
 (define (spill-code reg)
   (match reg
     [(list 'register n)
@@ -386,23 +353,21 @@
      `((lw ,sp-reg ,n ,(+ n 1)
            ,(format " ; restore r~a" n)))]))
 
+(define (code-formals code)
+  (cadr code))
+
 ;; simple stack frame handling for now
 (define *frame-size* 16)
 
 (define *debug-codegen* #f)
 
-(define (sethi-ullman-gen code-exp entry-label)
+(define (gen-ir code-exp entry-label)
   (match-define (list 'code (list formals ...) body-exp)
                 code-exp)
   (let* ([env (make-env (global-env))]
-         [need-table (sethi-ullman-label code-exp)]
-         [need (lambda (exp)
-                 (hash-ref need-table exp 0))]
-         [exp-reg-table (make-hash)]
-         [exp-reg (lambda (exp) (hash-ref exp-reg-table exp))]
          [insns empty]
          [begin-label (internal-label)]
-         [n 0]
+         [n-temp 0]
          [k 3])
     (for ([arg formals]
           [reg (in-naturals 1)])
@@ -413,87 +378,41 @@
           (set! insns (cons args insns))))
     (define (emit-all! . l)
       (for-each emit! l))
+    (define (alloc-temp)
+      (begin0
+          (list 'temp n-temp)
+        (set! n-temp (add1 n-temp))))
     (define (cg exp dd cd next-label)
-      (define (set-n! new-n)
-        (when (< new-n 0)
-          (error 'set-n! "Illegal new register state, n=~a" new-n))
-        (set! n new-n))
-      (let ([choose-reg
-             (lambda (delta (use-dd #t))
-               (unless (zero? delta)
-                 (set-n! (+ n delta)))
-               (let ([reg (if (and dd use-dd)
-                              dd
-                              (begin
-                                (when (<= n 0)
-                                  (error 'choose-reg
-                                         "illegal register state, n=~a" n))
-                                (list 'register (- 6 n))))])
-                 (hash-set! exp-reg-table exp reg)
-                 reg))]
-            [gen-tail
-             (lambda ()
-               (cond
-                ;; expression in tail position, return
-                [(eq? cd 'return)
-                 ;; increment stack pointer
-                 (emit! 'lw 0 call-reg (const-ref *frame-size*))
-                 (emit! 'add sp-reg call-reg sp-reg
-                        (format "; SP += ~a" *frame-size*))
-                 ;; and return
-                 (emit! 'jalr ret-reg call-reg "; return")]
-                ;; continue directly to next label
-                [(eq? cd next-label) #t]
-                ;; jump to next label
-                [else (emit! 'beq 0 0 cd)]))]
-            [gen-children
-             (lambda (cl cr body-label)
-               (cond
-                ;; both already in registers
-                [(and (= (need cl) 0) (= (need cr) 0))
-                 (list (env-lookup env cl) (env-lookup env cr))]
-                ;; both children need >= k registers
-                [(and (>= (need cl) k) (>= (need cr) k))
-                 (let* ([spill-label (internal-label)]
-                        [unspill-label (internal-label)]
-                        [r-reg (cg cr #f spill-label spill-label)])
-                   (set-n! (- n 1))
-                   (emit! 'label spill-label)
-                   (emit-all! (spill-code r-reg))
-                   (let ([l-reg (cg cl #f unspill-label unspill-label)])
-                     (emit! 'label unspill-label)
-                     (emit-all! (unspill-code r-reg))
-                     (list l-reg r-reg)))]
-                ;; one doesn't, evaluate right one first
-                [(>= (need cl) (need cr))
-                 (let* ([r-label (internal-label)]
-                        [l-reg (cg cl #f r-label r-label)])
-                   (emit! 'label r-label)
-                   (begin0
-                       (list l-reg
-                             (cg cr #f body-label body-label))
-                     (set-n! (- n 1))))]
-                ;; left one first
-                [else
-                 (let* ([l-label (internal-label)]
-                        [r-reg (cg cr #f l-label l-label)])
-                   (emit! 'label l-label)
-                   (begin0
-                       (list (cg cl #f body-label body-label)
-                             r-reg)
-                     (set-n! (- n 1))))]))])
-        (when *debug-codegen*
-          (trace choose-reg)
-          (trace set-n!))
+      (define (gen-tail)
+        ;; unused
+        (cond
+         ;; expression in tail position, return
+         [(eq? cd 'return)
+          ;; increment stack pointer
+          (emit! 'lw 0 call-reg (const-ref *frame-size*))
+          (emit! 'add sp-reg call-reg sp-reg
+                 (format "; SP += ~a" *frame-size*))
+          ;; and return
+          (emit! 'jalr ret-reg call-reg "; return")]
+         ;; continue directly to next label
+         [(eq? cd next-label) #t]
+         ;; jump to next label
+         [else (emit! 'beq 0 0 cd)]))
+      (define (gen-children cl cr body-label)
+        (let* ([l-label (internal-label)]
+               [r-reg (cg cr #f l-label l-label)])
+          (emit! 'label l-label)
+          (list (cg cl #f body-label body-label)
+                r-reg)))
+      (define (gen-code)
         (match exp
           ;; constant reference
           [(? const?)
            (let* ([imm (immediate-rep exp)]
                   [cname (const-ref imm)]
-                  [reg (choose-reg 1)])
+                  [reg (alloc-temp)])
              (emit! 'lw 0 reg cname
                     (format "; r~a = ~a" (cadr reg) exp))
-             (gen-tail)
              reg)]
           ;; symbol
           [(? symbol?)
@@ -502,25 +421,22 @@
                ;; constant, from the constant pool
                [(list 'immediate val)
                 (let* ([cname (const-ref val)]
-                       [reg (choose-reg 1)])
+                       [reg (alloc-temp)])
                   (emit! 'lw 0 reg cname
                          (format "; r~a = ~a" (cadr reg) exp))
-                  (gen-tail)
                   reg)]
                ;; register variable (formal param)
                [(list 'register num)
-                (gen-tail)
                 referent]))]
           ;; unary primitive
           [(list 'primcall prim arg)
            (let ([call-label (internal-label)])
              (let ([arg-reg (cg arg #f call-label call-label)]
-                   [dest-reg (choose-reg 0)])
+                   [dest-reg (alloc-temp)])
                (match prim
                  ['%bnot (emit! 'nand arg-reg arg-reg dest-reg)]
                  ['%car #f] ;; TODO
                  ['%cdr #f])
-               (gen-tail)
                dest-reg))]
           ;; binary primitive
           [(list 'primcall prim arg1 arg2)
@@ -528,57 +444,52 @@
                   [child-regs (gen-children arg1 arg2 call-label)]
                   [t1 (car child-regs)]
                   [t2 (cadr child-regs)]
-                  [dest-reg (choose-reg 0)]) ;; decr. in gen-children
+                  [dest-reg (alloc-temp)]) ;; decr. in gen-children
              (match prim
                ['%add  (emit! 'add t1 t2 dest-reg)]
                ['%nand (emit! 'nand t1 t2 dest-reg)]
                ['%band (emit-all!
                         `((nand ,t1 ,t2 ,dest-reg)
                           (nand ,dest-reg ,dest-reg ,dest-reg)))])
-             (gen-tail)
              dest-reg)]
           ;; function call
           [(list 'labelcall sym args ...)
            ;; save our formals onto the stack
-           (for ([reg (in-range 1 (max (length args)
-                                       (length formals)))])
-             (emit-all! (spill-code (list 'register reg))))
+           ;; (for ([reg (in-range 1 (max (length args)
+           ;;                             (length formals)))])
+           ;;   (emit-all! (spill-code (list 'register reg))))
            ;; save live temporaries
-           (for ([reg (in-range 1 (add1 n))])
-             (emit-all! (spill-code (list 'register (- 6 reg)))))
+           ;; (for ([reg (in-range 1 (add1 n))])
+           ;;   (emit-all! (spill-code (list 'register (- 6 reg)))))
+
            ;; marshal arguments
-           (for ([arg args]
-                 [reg (in-naturals 1)])
-             (let ([arg-done-label (internal-label)])
-               (cg arg (list 'register reg) arg-done-label arg-done-label)
-               ;; XXX: need to mark this variable to be loaded from
-               ;; the stack now
-               (emit! 'label arg-done-label)))
-           ;; XXX: not sure if this is the right way to handle n...
-           (let ([dest-reg (choose-reg (if (> (length args) 1)
-                                           0
-                                           1)
-                                       #f)])
+           (let ([arg-temps
+                  (for/list ([arg args])
+                    (let ([arg-done-label (internal-label)])
+                      (begin0
+                          (cg arg #f arg-done-label arg-done-label)
+                        (emit! 'label arg-done-label))))]
+                 [dest-reg (alloc-temp)]
+                 [target (lambda-addr-label (cadr (env-lookup env sym)))])
              ;; TODO: check for tail call
-             (emit! 'lw 0 dest-reg (lambda-addr-label
-                                    (cadr (env-lookup env sym))))
+             (apply emit! 'labelcall dest-reg target arg-temps)
+             ;;(emit! 'lw 0 dest-reg target)
              ;; save our return addr
-             (emit-all! (spill-code (list 'register ret-reg)))
+             ;;(emit-all! (spill-code (list 'register ret-reg)))
              ;; perform the call
-             (emit! 'jalr dest-reg ret-reg (format "; call ~a" sym))
+             ;;(emit! 'jalr dest-reg ret-reg (format "; call ~a" sym))
              ;; restore the return addr
-             (emit-all! (unspill-code (list 'register ret-reg)))
+             ;;(emit-all! (unspill-code (list 'register ret-reg)))
              ;; put the return value where it belongs
-             (emit! 'add 0 1 dest-reg)
+             ;;(emit! 'add 0 1 dest-reg)
              ;;(set-n! (- n 1))
              ;; restore temporaries
-             (for ([reg (in-range 1 n)])
-               (emit-all! (unspill-code (list 'register (- 6 reg)))))
+             ;;(for ([reg (in-range 1 n)])
+             ;;  (emit-all! (unspill-code (list 'register (- 6 reg)))))
              ;; XXX: lazily restore formals
-             (for ([reg (in-range 1 (max (length args)
-                                         (length formals)))])
-               (emit-all! (unspill-code (list 'register reg))))
-             (gen-tail)
+             ;; (for ([reg (in-range 1 (max (length args)
+             ;;                             (length formals)))])
+             ;;   (emit-all! (unspill-code (list 'register reg))))
              dest-reg)]
           ;; conditional
           [(list 'if if-pred if-then if-else)
@@ -593,52 +504,409 @@
                      [(list 'primcall '%eq? pa0 pa1)
                       (gen-children pa0 pa1 branch-label)])])
              (emit! 'label branch-label)
-             (emit! 'beq (car registers) (cadr registers) true-label)
-             (let ([base-n (- n (need if-pred))])
-               (set-n! base-n)
-               (emit! 'label false-label)
-               (cg if-else dd cd true-label)
-               (set-n! base-n)
-               (emit! 'label true-label)
-               (cg if-then dd cd next-label)))])))
+             (emit! 'beq (car registers) (cadr registers) true-label
+                    (format "; ~v" exp))
+             (emit! 'label false-label)
+             (cg if-else dd cd true-label)
+             (emit! 'label true-label)
+             (cg if-then dd cd next-label))]))
+      (when *debug-codegen*
+        (trace alloc-temp))
+      (let ([result (gen-code)])
+        (cond
+         [(tagged-list? 'if exp) #f]
+         ;; expression in tail position, return
+         [(eq? cd 'return)
+          (emit! 'return result 'return-addr)]
+         ;; continue directly to next label
+         [(eq? cd next-label) #t]
+         ;; jump to next label
+         [else (emit! 'beq 0 0 cd)])
+        result))
     (when *debug-codegen*
-      (trace cg)
-      (eprintf "need: ~a\n" (pretty-format need-table)))
+      (trace cg))
     (emit! 'noop (format "; ~v" code-exp))
     ;; function entry point
     (emit! 'label entry-label)
+    (emit! 'prologue)
+    (emit! 'bind 'return-addr 6)
     ;; decrement stack pointer
-    (emit! 'lw 0 call-reg (const-ref (- *frame-size*)))
-    (emit! 'add sp-reg call-reg sp-reg
-           (format "; SP -= ~a" *frame-size*))
+    ;;(emit! 'lw 0 call-reg (const-ref (- *frame-size*)))
+    ;; (emit! 'add sp-reg call-reg sp-reg
+    ;;        (format "; SP -= ~a" *frame-size*))
     ;; begin-label
     (emit! 'label begin-label)
-    (cg body-exp '(register 1) 'return #f)
+    (cg body-exp #f 'return #f)
     (reverse insns)))
+
+(define (ir-dest stmt)
+  (let* ([tag (car stmt)]
+         [dest
+          (case tag
+            [(add nand) (fourth stmt)]
+            [(lw) (third stmt)]
+            [(labelcall) (second stmt)]
+            [(bind) (second stmt)]
+            [(sw beq noop label prologue return) #f]
+            [else (error "unhandled tag: " tag)])])
+    (if (or (eq? dest 0) (equal? dest '(register 0)))
+        #f
+        dest)))
+
+(define (ir-sources stmt)
+  (let ([tag (car stmt)])
+    (remove* '(0 (register 0))
+             (case tag
+               [(add nand) (list (second stmt) (third stmt))]
+               [(lw) (list (second stmt))]
+               [(sw) (list (second stmt) (third stmt))]
+               [(labelcall) (cdddr stmt)]
+               [(beq) (list (second stmt) (third stmt))]
+               [(return) (list (second stmt) (third stmt))]
+               [(noop label bind prologue) empty]
+               [else (error "unhandled tag: " tag)]))))
+
+(define (interval-var i)
+  (first i))
+
+(define (interval-start i)
+  (second i))
+
+(define (interval-end i)
+  (third i))
+
+(define (interval-stmt i)
+  (fourth i))
+
+(define (interval-live i)
+  (fifth i))
+
+(define (location-stack-loc l)
+  (car l))
+
+(define (location-spill-pos l)
+  (cadr l))
+
+(define (linear-scan-build-intervals code)
+  (let* ([starts (make-hash)]
+         [ends (make-hash)]
+         [stmts (list->vector code)])
+    (for ([stmt code]
+          [i (in-naturals)])
+      (let ([dest (ir-dest stmt)])
+        (when (and dest (not (hash-has-key? starts dest)))
+          (hash-set! starts dest i))
+        (for ([src (ir-sources stmt)])
+          (hash-set! ends src i))))
+    (cond
+     [(= (hash-count starts) (hash-count ends)) #t]
+     [(> (hash-count starts) (hash-count ends))
+      (error 'linear-scan-build-intervals
+             "no end found for: ~v"
+             (remove* (dict-keys ends) (dict-keys starts)))]
+     [(< (hash-count starts) (hash-count ends))
+      (error 'linear-scan-build-intervals
+             "no start found for: ~v"
+             (remove* (dict-keys starts) (dict-keys ends)))])
+    (sort (for/list ([thing (hash-keys starts)])
+            (let ([start (hash-ref starts thing)])
+              (list thing
+                    start
+                    (hash-ref ends thing)
+                    (vector-ref stmts start))))
+          < #:key interval-start)))
+
+(define (linear-scan-alloc code)
+  (let* ([intervals (linear-scan-build-intervals code)]
+         [active empty]
+         [free '(1 2 3 6)]
+         [r (length free)]
+         [next-spill-loc 0]
+         [locations empty]
+         [assignments empty]
+         [spilled empty]
+         [live-at empty])
+    (define (add-active i)
+      (set! active
+            (sort (cons i active)
+                  < #:key interval-end)))
+    (define (assign-location var spill-pos)
+      (let ([loc next-spill-loc])
+        (set! locations (dict-set locations
+                                  var
+                                  (list loc
+                                        spill-pos)))
+        (set! next-spill-loc (add1 next-spill-loc))
+        loc))
+    (define (expire-old-intervals i)
+      (let-values ([(expired valid)
+                    (partition (lambda (j) (< (interval-end j)
+                                              (interval-start i)))
+                               active)])
+        (values valid
+                (append (map (lambda (j)
+                               (dict-ref assignments (interval-var j)))
+                             expired)
+                        free))))
+    (define (spill-at-interval i)
+      (let ([spill (last active)])
+        (if (> (interval-end spill) (interval-end i))
+            ;; spill an existing variable
+            (let* ([var (interval-var i)]
+                   [reg (dict-ref assignments (interval-var spill))]
+                   [loc (assign-location (interval-var spill)
+                                         (interval-start i))])
+              (set! assignments (dict-set assignments
+                                          var
+                                          reg))
+              (set! spilled (dict-set spilled var loc))
+              (set! active (sort (cons i (remove spill active))
+                                 < #:key interval-end)))
+            ;; spill this one immediately
+            (begin
+              (assign-location (interval-var i)
+                               (interval-start i))))))
+    (for ([i intervals])
+      (let ([stmt (interval-stmt i)])
+        (if (tagged-list? 'bind stmt)
+            ;; explicit register binding
+            (let ([ref (cadr stmt)]
+                  [reg (caddr stmt)])
+              (set! live-at (cons (map (curry dict-ref assignments)
+                                       (dict-keys active))
+                                  live-at))
+              (set! assignments (dict-set assignments
+                                          ref
+                                          reg))
+              (set! free (remove reg free))
+              (add-active i))
+            ;; temporary
+            (begin
+              (set!-values (active free) (expire-old-intervals i))
+              (set! live-at (cons (map (curry dict-ref assignments)
+                                       (dict-keys active))
+                                  live-at))
+              (if (= (length active) r)
+                  ;; spill something
+                  (spill-at-interval i)
+                  ;; assign a register now
+                  (begin
+                    (set! assignments (dict-set assignments
+                                                (interval-var i)
+                                                (car free)))
+                    (set! free (cdr free))
+                    (add-active i)))))))
+    (values assignments
+            locations
+            (map (lambda (int live)
+                   (append int (list live)))
+                 intervals
+                 (reverse live-at))
+            spilled)))
+
+(define (last-interval-for i intervals)
+  (let ([succ (cadr intervals)])
+    (if (< i (interval-start succ))
+        (car intervals)
+        (last-interval-for i (cdr intervals)))))
 
 (define no-label "      ")
 
+(define spill-dest-reg 5)
+(define spill-s1-reg 4)
+(define spill-s2-reg 5)
+
+(define (spill-sp-offset loc)
+  (+ 5 loc))
+
 (define (gen-asm sasm)
-  (let* ([pending-label no-label]
-         [unwrap (lambda (v)
-                   (match v
-                     [(list 'register n) n]
-                     [else v]))]
-         [fmt-asm
-          (lambda (dir)
-            (begin0 (string-join (map (lambda (v)
-                                        (~a v #:min-width 7))
-                                      (cons pending-label
-                                            (map unwrap dir))))
-              (set! pending-label no-label)))]
-         [handle-directive
-          (lambda (dir)
-            (match dir
-              [(list 'label (? string? label))
-               (set! pending-label label)
-               #f]
-              [(? list?) (fmt-asm dir)]))])
-    (filter identity (map handle-directive sasm))))
+  (let*-values
+      ([(assignments locations intervals spilled) (linear-scan-alloc sasm)]
+       [(asm) empty]
+       [(before) empty]
+       [(after) empty]
+       [(pending-label) no-label])
+    (define (fmt-asm dir)
+      (begin0 (string-join (map (lambda (v)
+                                  (~a v #:min-width 7))
+                                (cons pending-label dir)))
+        (set! pending-label no-label)))
+    (define (emit-line l)
+      (set! asm (cons l asm)))
+    (define (emit-before line)
+      (set! before (cons line before)))
+    (define (emit-after line)
+      (set! after (cons line after)))
+    (define (load-spilled reg loc)
+      (fmt-asm (list 'lw sp-reg reg loc
+                     "; load spilled value ")))
+    (define (store-spilled reg loc)
+      (fmt-asm (list 'sw sp-reg reg loc
+                     "; store spilled value ")))
+    ;; (dest-info spec pos):
+    ;;   if spilling directly:  'spill   spill-loc
+    ;;   if spilling other val: dest-reg spill-loc
+    ;;   no spill:              dest-reg #f
+    (define (dest-info d pos)
+      (match d
+        [(or (list 'temp _)
+             'return-addr)
+         (let* ([asn (assoc d assignments)]
+                [loc-rec (assoc d locations)]
+                [stack-loc (and loc-rec (location-stack-loc loc-rec))]
+                [assigned-reg (and asn (cdr asn))]
+                [spill-loc (dict-ref spilled d #f)])
+           (cond
+            ;; spill this
+            [stack-loc
+             ; XXX
+             (values 'spill stack-loc)]
+            ;; spill something else
+            [spill-loc
+             (values assigned-reg spill-loc)]
+            [else
+             (values assigned-reg #f)]))]
+         [(list 'register n)
+          (values n #f)]
+         [else
+          (values d #f)]))
+    (define (subst-dest d pos)
+      (match d
+        [(or (list 'temp _)
+             'return-addr)
+         (match/values (dest-info d pos)
+           ;; no spill
+           [(dest #f)
+            dest]
+           ;; spill this from scratch reg after call
+           [('spill loc)
+            (emit-after (store-spilled spill-dest-reg loc))
+            spill-dest-reg]
+           ;; reuse register, spill before call
+           [(dest loc)
+            (emit-before (store-spilled dest loc))
+            dest])]
+        [(list 'register n)
+         n]
+        [else d]))
+    (define (subst-src v pos target-reg)
+      (match v
+        [(or (list 'temp _)
+             'return-addr)
+         (let ([loc (dict-ref locations v #f)])
+           (if (and loc (>= pos (location-spill-pos loc)))
+               (begin
+                 (emit-before (load-spilled target-reg
+                                            (location-stack-loc loc)))
+                 target-reg)
+               (cdr (assoc v assignments))))]
+        [(list 'register n)
+         n]
+        [else v]))
+    (define (emit-unwrapped! . dir)
+      (emit-line (fmt-asm dir)))
+    (define (emit! . dir)
+      (for-each emit-line before)
+      (apply emit-unwrapped! dir)
+      (for ([line after])
+        (emit-line line))
+      (set! before empty)
+      (set! after empty))
+
+    (for ([dir sasm]
+          [pos (in-naturals)])
+      (match dir
+        [(list 'label (? string? label))
+         (set! pending-label label)
+         #f]
+        ;; bind, other meta-instructions to ignore
+        [(list 'bind _ ...)
+         #f]
+        ;; add, nand
+        [(list (and (or 'add 'nand) op) s1 s2 dest)
+         (emit! op
+                (subst-src s1 pos spill-s1-reg)
+                (subst-src s2 pos spill-s2-reg)
+                (subst-dest dest pos))]
+        ;; lw
+        [(list 'lw s1 dest offset comment ...)
+         (emit! 'lw
+                (subst-src s1 pos spill-s1-reg)
+                (subst-dest dest pos)
+                offset
+                (if comment
+                    (car comment)
+                    ""))]
+        ;; sw
+        [(list 'sw s1 s2 offset comment ...)
+         (emit! 'sw
+                (subst-src s1 pos spill-s1-reg)
+                (subst-src s2 pos spill-s2-reg)
+                offset)]
+        ;; beq
+        [(list 'beq s1 s2 comment ...)
+         (emit! 'beq
+                (subst-src s1 pos spill-s1-reg)
+                (subst-src s2 pos spill-s2-reg)
+                (if comment
+                    (car comment)
+                    ""))]
+        ;; labelcall
+        [(list 'labelcall dest-reg-spec label args ...)
+         (let*-values ([(dest-reg dest-loc) (dest-info dest-reg-spec pos)]
+                       [(target-reg) spill-s2-reg]
+                       [(live) (remove dest-reg
+                                       (interval-live
+                                        (last-interval-for pos
+                                                           intervals)))])
+           (for ([reg live]
+                 [save-offset (in-range 1 5)])
+             (emit-unwrapped! 'sw sp-reg reg save-offset
+                              (format "; save r~a" reg)))
+           (when (and dest-loc (not (eq? dest-reg 'spill)))
+             (emit-unwrapped! (store-spilled dest-reg dest-loc)))
+           ;; marshal first 3 args into registers
+           (for ([arg args]
+                 [n (in-naturals 1 3)])
+             (let ([src (subst-src arg pos n)])
+               (unless (= src n)
+                 (emit! 'add 0 src n
+                        (format "; position arg ~a" n)))))
+           (when (> (length args) 3)
+             (error "need to add support for stack args!"))
+           (emit! 'lw 0 target-reg label
+                  "; load target address")
+           (emit! 'jalr target-reg ret-reg (format "; call ~a" label))
+           (cond
+            ;; spill result
+            [(and dest-loc (eq? dest-reg 'spill))
+             (emit-unwrapped! (store-spilled rv-reg dest-loc))]
+            ;; not spilling result, but have to move it
+            [(and (not dest-loc) (not (= rv-reg dest-reg)))
+             (emit-unwrapped! `(add 0 1 ,dest-reg "; store result"))])
+           ;; otherwise we wanted the value in r1, and it's there now
+           ;; restore live vars
+           (for ([reg live]
+                 [save-offset (in-range 1 5)])
+             (emit! 'lw sp-reg reg save-offset (format "; restore r~a" reg))))]
+        ;; return
+        [(list 'return rv-ref addr-ref)
+         (let ([rv-cur-reg (subst-src rv-ref pos rv-reg)]
+               [addr-reg (subst-src addr-ref pos spill-s2-reg)])
+           (unless (= rv-cur-reg rv-reg)
+             (emit! 'add 0 rv-cur-reg rv-reg "; place return value"))
+           (emit! 'lw 0 spill-s1-reg (const-ref *frame-size*))
+           (emit! 'add sp-reg spill-s1-reg sp-reg
+                  (format "; SP += ~a" *frame-size*))
+           (emit! 'jalr addr-reg spill-s1-reg "; return"))]
+        [(list 'prologue)
+         (emit! 'lw 0 spill-s1-reg (const-ref (- *frame-size*)))
+         (emit! 'add sp-reg spill-s1-reg sp-reg
+                (format "; SP -= ~a" *frame-size*))]
+        ;; noop
+        [(list 'noop comment ...)
+         (apply emit! dir)]))
+    (reverse asm)))
 
 
 (define *runtime-text*
@@ -678,21 +946,15 @@
         (format "ctag    .fill ~a" cons-tag)
         (format "pmask   .fill ~a" pointer-mask)))
 
-(define *asm-functions*
-  '((cons . "Lcons")
-    (car  . "Lcar")
-    (cdr  . "Lcdr")))
+(define (sethi-ullman-gen a b)
+  #f)
 
 (define (compile-top prog)
   (init-global-env)
-  (for ([fdef *asm-functions*])
-    (env-define (global-env)
-                (car fdef)
-                (list 'fun-label (cdr fdef))))
   (define (compile-fun code label)
     (for-each displayln
-              (gen-asm (sethi-ullman-gen (expand-prims code)
-                                         label))))
+              (gen-asm (gen-ir (expand-prims code)
+                               label))))
   (for-each displayln *runtime-text*)
   (match prog
     [(list 'labels
