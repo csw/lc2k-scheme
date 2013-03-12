@@ -254,7 +254,6 @@
 
 ;; global
 
-(make-env #f)
 (define (global-env) (dict-ref environments 0))
 
 (define lambda-n 0)
@@ -301,6 +300,9 @@
     (cdr  . "Lcdr")))
 
 (define (init-global-env)
+  (set! num-environments 0)
+  (set! environments empty)
+  (make-env #f)
   (set! constants (make-hash))
   (set! constant-n 0)
   (set! lambda-n 0)
