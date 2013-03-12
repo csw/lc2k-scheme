@@ -462,7 +462,7 @@
                   [cname (const-ref imm)]
                   [reg (or dd (alloc-temp))])
              (emit! 'lw 0 reg cname
-                    (format "; r~a = ~a" (cadr reg) exp))
+                    (format "; ~a = ~a" reg exp))
              reg)]
           ;; symbol
           [(? symbol?)
@@ -473,7 +473,7 @@
                 (let* ([cname (const-ref val)]
                        [reg (or dd (alloc-temp))])
                   (emit! 'lw 0 reg cname
-                         (format "; r~a = ~a" (cadr reg) exp))
+                         (format "; ~a = ~a" reg exp))
                   reg)]
                ;; register variable (formal param)
                [(list 'local name)
@@ -663,20 +663,15 @@
          [locations empty]
          [assignments empty]
          [fixed-loc empty]
-         [spilled empty]
          [live-at empty])
     (define (add-active i)
       (set! active
             (sort (cons i active)
                   < #:key interval-end)))
-    (define (assign-location var spill-pos)
+    (define (assign-location var)
       (let* ([fixed (dict-ref fixed-loc var #f)]
              [loc (or fixed
                       (list 'spill next-spill-loc))])
-        (set! locations (dict-set locations
-                                  var
-                                  (list loc
-                                        spill-pos)))
         (unless fixed
           (set! next-spill-loc (add1 next-spill-loc)))
         loc))
@@ -686,28 +681,32 @@
                                               (interval-start i)))
                                active)])
         (values valid
-                (append (map (lambda (j)
-                               (dict-ref assignments (interval-var j)))
-                             expired)
+                (append (map cadr
+                             (filter (curry tagged-list? 'register)
+                                     (map (lambda (j)
+                                            (dict-ref assignments (interval-var j)))
+                                          expired)))
                         free))))
     (define (spill-at-interval i)
       (let ([spill (last active)])
         (if (> (interval-end spill) (interval-end i))
             ;; spill an existing variable
             (let* ([var (interval-var i)]
-                   [reg (dict-ref assignments (interval-var spill))]
-                   [loc (assign-location (interval-var spill)
-                                         (interval-start i))])
-              (set! assignments (dict-set assignments
-                                          var
-                                          reg))
-              (set! spilled (dict-set spilled var loc))
+                   [to-spill (interval-var spill)]
+                   [reg (dict-ref assignments to-spill)]
+                   [loc (assign-location to-spill)])
+              (set! assignments (dict-set* assignments
+                                           var reg
+                                           to-spill loc))
               (set! active (sort (cons i (remove spill active))
                                  < #:key interval-end)))
             ;; spill this one immediately
             (begin
-              (assign-location (interval-var i)
-                               (interval-start i))))))
+              (set! assignments
+                    (dict-set assignments
+                              (interval-var i)
+                              (assign-location (interval-var i)
+                                               (interval-start i))))))))
     (for ([i intervals])
       (let ([stmt (interval-stmt i)])
         (match stmt
@@ -718,7 +717,7 @@
                                live-at))
            (set! assignments (dict-set assignments
                                        ref
-                                       register))
+                                       (list 'register register)))
            (set! free (remove register free))
            (when loc
              (set! fixed-loc (dict-set fixed-loc ref loc)))
@@ -735,19 +734,17 @@
                (begin
                  (set! assignments (dict-set assignments
                                              (interval-var i)
-                                             (car free)))
+                                             (list 'register (car free))))
                  (set! free (cdr free))
                  (add-active i)))])))
     (values assignments
-            locations
             (map (lambda (int live)
                    (append int (list live)))
                  intervals
                  (reverse live-at))
-            spilled
             (dict-set* empty
-                       'spill-locations next-spill-loc
-                       'fixed-loc fixed-loc))))
+                       'fixed-loc fixed-loc
+                       'num-spill-locs next-spill-loc))))
 
 (define (last-interval-for i intervals)
   (let ([succ (and (pair? (cdr intervals))
@@ -766,54 +763,29 @@
   (+ 5 loc))
 
 (define (analyze-frame code sasm)
-  ;; put the output of linear-scan-alloc in a more convenient form
-  ;; 
-  (let*-values ([(assignments locations intervals spilled frame-info)
+  (let*-values ([(assignments intervals frame-info)
                  (linear-scan-alloc sasm)]
                 [(is-leaf) (findf (curry tagged-list? 'labelcall)
                                   code)]
-                [(all-vars) (dict-keys assignments)]
-                [(var-dict spill-size)
-                 (for/fold ([dict empty]
-                            [offset (dict-ref frame-info
-                                              'spill-locations)])
-                     ([var all-vars])
-                   (let* ([loc-rec (dict-ref locations var #f)]
-                          [v-offset (and (not loc-rec)
-                                         (not is-leaf)
-                                         (add1 offset))]
-                          [interval (assoc var intervals)]
-                          [var-info
-                           (dict-set* empty
-                                      'register
-                                      (dict-ref assignments var #f)
-                                      'stack-loc
-                                      (if loc-rec
-                                          (car loc-rec)
-                                          (and v-offset
-                                               (list 'spill v-offset)))
-                                      'spill-pos
-                                      (and loc-rec (cadr loc-rec))
-                                      'spill-prev-to
-                                      (dict-ref spilled var #f)
-                                      'interval-start
-                                      (interval-start interval)
-                                      'interval-end
-                                      (interval-end interval))])
-                     (values (dict-set dict var var-info)
-                             (or v-offset
-                                 offset))))]
                 [(num-formals) (length (code-formals code))]
                 [(stack-formals) (max 0 (- num-formals 3))]
-                [(frame-size) (+ 2 stack-formals spill-size)]
-                [(spill-offset) (add1 spill-size)])
-    (values var-dict
+                [(num-reg) (length (filter (curry tagged-list? 'register)
+                                           (dict-values assignments)))]
+                [(spill-size) (length assignments)]
+                [(frame-size) (+ 1 stack-formals spill-size)]
+                [(save-offset) num-reg]
+                [(spill-offset) spill-size])
+    (values assignments
             intervals
             (dict-set* frame-info
                        'is-leaf is-leaf
                        'spill-offset spill-offset
                        'spill-size spill-size
+                       'save-offset save-offset
                        'frame-size frame-size))))
+
+(define/match (register-num r)
+  [((list 'register n)) n])
 
 ;; Stack frame layout:
 ;;
@@ -840,10 +812,11 @@
 ;;
 (define (gen-asm code sasm)
   (let*-values
-      ([(var-info intervals frame-info) (analyze-frame code sasm)]
+      ([(assignments intervals frame-info) (analyze-frame code sasm)]
        [(asm) empty]
        [(before) empty]
        [(after) empty]
+       [(lazy-load) empty]
        [(pending-label) no-label])
     (define (fmt-asm dir)
       (begin0 (string-join (map (lambda (v)
@@ -858,6 +831,7 @@
       (set! after (cons line after)))
     (define/match (loc-stack-offset loc)
       [((list 'frame n)) (- (dict-ref frame-info 'frame-size) n)]
+      [((list 'save n)) (- (dict-ref frame-info 'save-offset) n)]
       [((list 'spill n)) (- (dict-ref frame-info 'spill-offset) n)])
     (define (load-spilled reg loc (v #f) (reason "spilled"))
       (fmt-asm (list 'lw sp-reg reg (loc-stack-offset loc)
@@ -865,138 +839,96 @@
     (define (store-spilled reg loc (v #f) (reason "spilled"))
       (fmt-asm (list 'sw sp-reg reg (loc-stack-offset loc)
                      (format "; store ~a value ~a" reason v))))
-    ;; (dest-info spec pos):
-    ;;   if spilling directly:  'spill   spill-loc
-    ;;   if spilling other val: dest-reg spill-loc
-    ;;   no spill:              dest-reg #f
-    (define (dest-info d pos)
-      (match d
-        [(or (list 'temp _)
-             'return-addr)
-         (let* ([info (dict-ref var-info d)]
-                [register (dict-ref info 'register)]
-                [stack-loc (dict-ref info 'stack-loc)]
-                [spill-prev (dict-ref info 'spill-prev-to)])
-           (cond
-            ;; spill this
-            [(not register)
-             ; XXX
-             (values 'spill stack-loc)]
-            ;; spill something else
-            [spill-prev
-             (values register spill-prev)]
-            [else
-             (values register #f)]))]
-         [(list 'register n)
-          (values n #f)]
-         [(? integer?)
-          (values d #f)]))
     (define (subst-dest d pos)
       (match d
         [(or (list 'temp _)
              'return-addr)
-         (match/values (dest-info d pos)
+         (match (dict-ref assignments d)
            ;; no spill
-           [(dest #f)
-            dest]
+           [(list 'register r)
+            r]
            ;; spill this from scratch reg after call
-           [('spill loc)
+           [(and loc (list (or 'spill 'frame) _))
             (emit-after (store-spilled spill-dest-reg loc d))
-            spill-dest-reg]
-           ;; reuse register, spill before call
-           [(dest loc)
-            (emit-before (store-spilled dest loc))
-            dest])]
+            spill-dest-reg])]
         [(list 'register n)
          n]
         [(? integer?) d]))
-    (define (src-info v pos)
-      (match v
-        [(or (list 'temp _)
-             (list 'local _)
-             'return-addr)
-         (let* ([info (dict-ref var-info v)]
-                [loc (dict-ref info 'stack-loc)]
-                [spill-pos (dict-ref info 'spill-pos)])
-           (if (and loc spill-pos (>= pos spill-pos))
-               loc
-               (dict-ref info 'register)))]
-        [(list 'register n)
-         n]
-        [(? integer?) v]))
     (define (subst-src v pos target-reg)
       (match v
         [(or (list 'temp _)
              (list 'local _)
              'return-addr)
-         (let* ([info (dict-ref var-info v)]
-                [loc (dict-ref info 'stack-loc)]
-                [spill-pos (dict-ref info 'spill-pos)])
-           (if (and loc spill-pos (>= pos spill-pos))
-               (begin
-                 (emit-before (load-spilled target-reg loc v))
-                 target-reg)
-               (dict-ref info 'register)))]
+         (match (dict-ref assignments v)
+           ;; register
+           [(list 'register r)
+            r]
+           ;; spill this from scratch reg after call
+           [(and loc
+                 (list (or 'spill 'frame) _))
+            (emit-before (load-spilled target-reg loc v))
+            target-reg])]
         [(list 'register n)
          n]
         [(? integer?) v]))
-    (define (register-for v)
-      (dict-ref (dict-ref var-info v) 'register))
     (define (reg-vars-live-past pos)
-      (filter-not (lambda (v)
-                    (= pos (dict-ref (dict-ref var-info v)
-                                     'interval-end)))
-                  (interval-live (last-interval-for pos intervals))))
+      (let ([reg-vars (filter (compose (curry tagged-list? 'register)
+                                       cdr)
+                              assignments)])
+        (filter (lambda (asg)
+                  (let ([interval (assoc (car asg) intervals)])
+                    (and interval
+                         (< (interval-start interval) pos)
+                         (> (interval-end interval) pos))))
+                reg-vars)))
     (define (save-regs-for-call pos except)
-      (for ([var (remove except (reg-vars-live-past pos))])
-        (let* ([info (dict-ref var-info var)])
-          (emit-line (store-spilled (dict-ref info 'register)
-                                    (dict-ref info 'stack-loc)
-                                    var
-                                    "saved")))))
+      (for ([assignment (dict-remove (reg-vars-live-past pos)
+                                     except)]
+            [n (in-naturals)])
+        (emit-line (store-spilled (register-num (cdr assignment))
+                                  (list 'save n)
+                                  (car assignment)
+                                  "saved"))))
     (define (restore-regs-for-call pos except)
-      (for ([var (remove except (reg-vars-live-past pos))])
-        (let* ([info (dict-ref var-info var)])
-          (emit-line (load-spilled (dict-ref info 'register)
-                                   (dict-ref info 'stack-loc)
-                                   var
-                                   "restored")))))
+      (for ([assignment (dict-remove (reg-vars-live-past pos)
+                                     except)]
+            [n (in-naturals)])
+        (emit-line (load-spilled (register-num (cdr assignment))
+                                 (list 'save n)
+                                 (car assignment)
+                                 "restored"))))
     (define (marshal-args args pos)
       ;; This turned out to be a far bigger mess than I was
       ;; anticipating. 
-      (define (marshal ctx dest moved stash-l)
+      (define (marshal ctx dest spilled)
         (unless (empty? ctx)
-          (let* ([cur (car ctx)]
+          (let* ([arg (car ctx)]
+                 [loc (dict-ref assignments arg)]
+                 [reg (and (tagged-list? 'register loc)
+                           (register-num loc))]
                  [remain (cdr ctx)]
-                 [cur-info (cadr cur)]
-                 [conflict (findf (lambda (a)
-                                    (equal? (cadr a) dest))
-                                  remain)]
-                 [reloc (assq cur-info moved)]
-                 [reg (if reloc
-                          (cdr reloc)
-                          cur-info)]
-                 [next-moved (if conflict
-                                 (cons (cons dest (car stash-l))
-                                       moved)
-                                 moved)]
-                 [next-stash (if conflict
-                                 (cdr stash-l)
-                                 stash-l)])
+                 [conflict (and reg
+                                (findf (lambda (a)
+                                         (equal? (dict-ref assignments a)
+                                                 (list 'register dest)))
+                                       remain))]
+                 [save-to (and conflict (list 'save dest))]
+                 [from-stack (dict-ref spilled reg #f)]
+                 [use-loc (or from-stack loc)])
             (when (> dest 3)
               (error "need to add support for stack args!"))
             (when conflict
-              (emit! 'add 0 dest (car stash-l)))
-            (if (number? reg)
-                (emit! 'add 0 reg dest)
-                (load-spilled dest reg))
-            (marshal remain (add1 dest) next-moved next-stash))))
-      (marshal (map (lambda (a)
-                      (list a (src-info a pos)))
-                    args)
-               1
-               empty
-               (list spill-s1-reg spill-s2-reg)))
+              (emit-line (store-spilled dest save-to #f "arg")))
+            (match use-loc
+              [(list 'register n)
+               (unless (= n dest)
+                 (emit! 'add 0 n dest (format "; marshal arg ~a" dest)))]
+              [(? list?)
+               (emit-line (load-spilled dest use-loc arg "arg"))])
+            (marshal remain (add1 dest) (if conflict
+                                            (dict-set spilled dest save-to)
+                                            spilled)))))
+      (marshal args 1 empty))
 
     (define (emit-unwrapped! . dir)
       (emit-line (fmt-asm dir)))
@@ -1016,9 +948,11 @@
                   pending-label label))
          (set! pending-label label)
          #f]
-        ;; bind, other meta-instructions to ignore
-        [(list 'bind _ ...)
-         #f]
+        ;; bind
+        [(list 'bind var start-reg fixed-loc ...)
+         (let ([assigned (dict-ref assignments var)])
+           (unless (equal? assigned (list 'register start-reg))
+             (emit-line (store-spilled start-reg assigned "relocated"))))]
         ;; add, nand
         [(list (and (or 'add 'nand) op) s1 s2 dest)
          (emit! op
@@ -1049,27 +983,21 @@
                     (car comment)
                     ""))]
         ;; labelcall
-        [(list 'labelcall dest-reg-spec label args ...)
-         (let*-values ([(dest-reg dest-loc) (dest-info dest-reg-spec pos)]
-                       [(target-reg) spill-s2-reg]
-                       [(live) (remove dest-reg-spec
-                                       (reg-vars-live-past pos))])
-           (save-regs-for-call pos dest-reg-spec)
+        [(list 'labelcall dest-var label args ...)
+         (let ([target-reg spill-s2-reg])
+           (save-regs-for-call pos dest-var)
            ;; marshal first 3 args into registers
            (marshal-args args pos)
            (emit! 'lw 0 target-reg label
                   "; load target address")
            (emit! 'jalr target-reg ret-reg (format "; call ~a" label))
-           (cond
-            ;; spill result
-            [(and dest-loc (eq? dest-reg 'spill))
-             (emit-line (store-spilled rv-reg dest-loc))]
-            ;; not spilling result, but have to move it
-            [(and (not dest-loc) (not (= rv-reg dest-reg)))
-             (emit-unwrapped! 'add 0 1 dest-reg "; store result")])
+           (match (dict-ref assignments dest-var)
+             [(list 'register 1) #t]
+             [(list 'register n) (emit! 'add 0 1 n "; store result")]
+             [(? list? stack-loc) (emit-line (store-spilled 1 stack-loc))])
            ;; otherwise we wanted the value in r1, and it's there now
            ;; restore live vars
-           (restore-regs-for-call pos dest-reg-spec))]
+           (restore-regs-for-call pos dest-var))]
         ;; return
         [(list 'return rv-ref addr-ref)
          (let ([rv-cur-reg (subst-src rv-ref pos rv-reg)]
