@@ -767,8 +767,8 @@
 (define (analyze-frame code sasm)
   (let*-values ([(assignments intervals frame-info)
                  (linear-scan-alloc sasm)]
-                [(is-leaf) (findf (curry tagged-list? 'labelcall)
-                                  code)]
+                [(is-leaf) (not (findf (curry tagged-list? 'labelcall)
+                                       sasm))]
                 [(num-formals) (length (code-formals code))]
                 [(stack-formals) (max 0 (- num-formals 3))]
                 [(num-reg) (length (filter (curry tagged-list? 'register)
@@ -776,7 +776,9 @@
                 [(spill-size) (length assignments)]
                 [(frame-size) (+ 1 stack-formals spill-size)]
                 [(save-offset) num-reg]
-                [(spill-offset) spill-size])
+                [(spill-offset) spill-size]
+                [(skip-frame-setup) (and is-leaf
+                                         (= num-reg (dict-count assignments)))])
     (values assignments
             intervals
             (dict-set* frame-info
@@ -784,7 +786,8 @@
                        'spill-offset spill-offset
                        'spill-size spill-size
                        'save-offset save-offset
-                       'frame-size frame-size))))
+                       'frame-size frame-size
+                       'skip-frame-setup skip-frame-setup))))
 
 (define/match (register-num r)
   [((list 'register n)) n])
@@ -1007,16 +1010,18 @@
                [frame-size (dict-ref frame-info 'frame-size)])
            (unless (= rv-cur-reg rv-reg)
              (emit! 'add 0 rv-cur-reg rv-reg "; place return value"))
-           (emit! 'lw 0 spill-s1-reg (const-ref frame-size))
-           (emit! 'add sp-reg spill-s1-reg sp-reg
-                  (format "; SP += ~a" frame-size))
+           (unless (dict-ref frame-info 'skip-frame-setup)
+             (emit! 'lw 0 spill-s1-reg (const-ref frame-size))
+             (emit! 'add sp-reg spill-s1-reg sp-reg
+                    (format "; SP += ~a" frame-size)))
            (emit! 'jalr addr-reg spill-s1-reg "; return"))]
         [(list 'prologue)
-         (emit! 'lw 0 spill-s1-reg (const-ref (- (dict-ref frame-info
-                                                           'frame-size))))
-         (emit! 'add sp-reg spill-s1-reg sp-reg
-                (format "; SP -= ~a" (dict-ref frame-info
-                                               'frame-size)))]
+         (unless (dict-ref frame-info 'skip-frame-setup)
+           (emit! 'lw 0 spill-s1-reg (const-ref (- (dict-ref frame-info
+                                                             'frame-size))))
+           (emit! 'add sp-reg spill-s1-reg sp-reg
+                  (format "; SP -= ~a" (dict-ref frame-info
+                                                 'frame-size))))]
         ;; noop
         [(list 'noop comment ...)
          (apply emit! dir)]))
