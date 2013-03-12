@@ -303,6 +303,8 @@
 (define (init-global-env)
   (set! constants (make-hash))
   (set! constant-n 0)
+  (set! lambda-n 0)
+  (set! internal-n 0)
   (for ([def `((empty . (immediate ,empty-list-v))
                (#t . (immediate ,true-v))
                (#f . (immediate ,false-v)))])
@@ -421,6 +423,9 @@
       (begin0
           (list 'temp n-temp)
         (set! n-temp (add1 n-temp))))
+    (define (no-code? exp)
+      (and (symbol? exp)
+           (tagged-list? 'local (env-lookup env exp))))
     (define (cg exp dd cd next-label)
       (define (gen-tail)
         ;; unused
@@ -438,11 +443,17 @@
          ;; jump to next label
          [else (emit! 'beq 0 0 cd)]))
       (define (gen-children cl cr body-label)
-        (let* ([l-label (internal-label)]
-               [r-reg (cg cr #f l-label l-label)])
-          (emit! 'label l-label)
+        ;; XXX: need to improve this
+        (cond
+         [(or (no-code? cl) (no-code? cr))
           (list (cg cl #f body-label body-label)
-                r-reg)))
+                (cg cr #f body-label body-label))]
+         [else
+          (let* ([l-label (internal-label)]
+                 [r-reg (cg cr #f l-label l-label)])
+            (emit! 'label l-label)
+            (list (cg cl #f body-label body-label)
+                  r-reg))]))
       (define (gen-code)
         (match exp
           ;; constant reference
@@ -496,14 +507,17 @@
           ;; function call
           [(list 'labelcall sym args ...)
            ;; marshal arguments
-           (let ([arg-temps
-                  (for/list ([arg args])
-                    (let ([arg-done-label (internal-label)])
-                      (begin0
-                          (cg arg #f arg-done-label arg-done-label)
-                        (emit! 'label arg-done-label))))]
-                 [dest-reg (or dd (alloc-temp))]
-                 [target (lambda-addr-label (cadr (env-lookup env sym)))])
+           (let* ([next-label (internal-label)]
+                  [arg-temps
+                   (for/list ([arg args])
+                     (if (no-code? arg)
+                         (cg arg #f next-label next-label)
+                         (begin0
+                             (cg arg #f next-label next-label)
+                           (emit! 'label next-label)
+                           (set! next-label (internal-label)))))]
+                  [dest-reg (or dd (alloc-temp))]
+                  [target (lambda-addr-label (cadr (env-lookup env sym)))])
              ;; TODO: check for tail call
              (apply emit! 'labelcall dest-reg target arg-temps)
              dest-reg)]
@@ -736,8 +750,9 @@
                        'fixed-loc fixed-loc))))
 
 (define (last-interval-for i intervals)
-  (let ([succ (cadr intervals)])
-    (if (< i (interval-start succ))
+  (let ([succ (and (pair? (cdr intervals))
+                   (cadr intervals))])
+    (if (or (not succ) (< i (interval-start succ)))
         (car intervals)
         (last-interval-for i (cdr intervals)))))
 
@@ -898,6 +913,7 @@
     (define (src-info v pos)
       (match v
         [(or (list 'temp _)
+             (list 'local _)
              'return-addr)
          (let* ([info (dict-ref var-info v)]
                 [loc (dict-ref info 'stack-loc)]
@@ -994,7 +1010,7 @@
     (for ([dir sasm]
           [pos (in-naturals)])
       (match dir
-        [(list 'label (? string? label))
+        [(list 'label (? string? label) trace ...)
          (unless (eq? pending-label no-label)
            (error 'gen-asm "label ~a already pending, setting ~a"
                   pending-label label))
