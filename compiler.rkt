@@ -409,7 +409,6 @@
                 code-exp)
   (let* ([env (make-env (global-env))]
          [insns empty]
-         [begin-label (internal-label)]
          [n-temp 0]
          [k 3])
     (define (emit! . args)
@@ -554,8 +553,6 @@
       (let ([var-ref (list 'local formal)])
         (env-define env formal var-ref)
         (emit! 'bind var-ref reg (list 'frame reg))))
-    ;; decrement stack pointer
-    (emit! 'label begin-label)
     (let ([temp (alloc-temp)])
       (cg body-exp temp 'return #f))
     (reverse insns)))
@@ -914,6 +911,7 @@
     (define (subst-src v pos target-reg)
       (match v
         [(or (list 'temp _)
+             (list 'local _)
              'return-addr)
          (let* ([info (dict-ref var-info v)]
                 [loc (dict-ref info 'stack-loc)]
@@ -948,6 +946,8 @@
                                    var
                                    "restored")))))
     (define (marshal-args args pos)
+      ;; This turned out to be a far bigger mess than I was
+      ;; anticipating. 
       (define (marshal ctx dest moved stash-l)
         (unless (empty? ctx)
           (let* ([cur (car ctx)]
