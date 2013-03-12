@@ -43,6 +43,17 @@
     (test-section "Conses")
     ;;(test-case '(empty? empty) #t)
     (test-section "Functions")
-    (test-case '((define (foo) 5) (+ 1 (foo))))
-    (test-case '((define (foo n) (+ 5 n)) (+ 1 (foo 7))))
+    (test-case '((define (foo) 5) (+ 1 (foo))) 6)
+    (test-case '((define (foo n) (+ 5 n)) (+ 1 (foo 7))) 13)
+    (test-case
+     '(
+       (define (sum l acc)
+         (if (empty? l)
+             acc
+             (sum (cdr l)
+                  (+ (car l) acc))))
+       (sum (cons 1 (cons 2 (cons 3 (cons 4 (cons 5 empty)))))
+            0)
+       )
+     15)
     (displayln "All tests succeeded.")))
