@@ -213,18 +213,19 @@
       [else `(%eq? #t ,expanded)])))
 
 (define (expand-prims exp)
-  (cond
+  (match exp
    ;; Core forms:
-   ((tagged-list? 'code exp) `(code ,(cadr exp) ,(expand-prims (caddr exp))))
-   ((const? exp)      exp)
-   ((prim? exp)       exp)
-   ((ref? exp)        exp)
+   [(list 'code (list args ...) body-exprs ...)
+    `(code ,args ,@(map expand-prims body-exprs))]
+   [(? const?)      exp]
+   [(? prim?)       exp]
+   [(? ref?)        exp]
    ;;((lambda? exp)     `(lambda ,(lambda->formals exp)
    ;;                      ,(expand-prims (lambda->exp exp))))
    ;((set!? exp)       `(set! ,(set!->var exp) ,(set!->exp exp)))
-   ((if? exp)         `(if ,(expand-if-pred (if->condition exp))
+   [(? if?)         `(if ,(expand-if-pred (if->condition exp))
                            ,(expand-prims (if->then exp))
-                           ,(expand-prims (if->else exp))))
+                           ,(expand-prims (if->else exp)))]
    
                                         ; Sugar:
    ;;((let? exp)        (expand-prims (let=>lambda exp)))
@@ -232,8 +233,8 @@
    ;;((begin? exp)      (expand-prims (begin=>let exp)))
    
                                         ; Applications:
-   ((app? exp)        (expand-call exp))
-   (else              (error "unknown exp: " exp))))
+   [(? app?)        (expand-call exp)]
+   [else              (error "unknown exp: " exp)]))
 
 ; num-environments : natural
 (define num-environments 0)
