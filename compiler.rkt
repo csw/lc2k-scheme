@@ -182,7 +182,13 @@
            [(list '+ x y)           `(%add ,(expand-prims x)
                                            ,(expand-prims y))]
            [(list '- x)             `(%add 1
-                                           ,(expand-prims (list 'bitwise-not x)))]
+                                           ,(expand-prims
+                                             (list 'bitwise-not x)))]
+           [(list '- x (? number? y))      `(%add ,(expand-prims x)
+                                           ,(- y))]
+           [(list '- x y)           `(%add ,(expand-prims x)
+                                           ,(expand-prims
+                                             (list '- y)))]
            [(list 'bitwise-and x y) `(%band ,(expand-prims x)
                                             ,(expand-prims y))]
            [(list 'bitwise-ior x y) `(%nand ,(expand-prims `(bitwise-not ,x))
