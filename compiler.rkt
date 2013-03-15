@@ -792,21 +792,37 @@
                                        sasm))]
                 [(num-formals) (length (code-formals code))]
                 [(stack-formals) (max 0 (- num-formals 3))]
-                [(num-reg) (length (filter (curry tagged-list? 'register)
-                                           (dict-values assignments)))]
-                [(spill-size) (length assignments)]
+                [(regs-used) (apply set (filter (curry tagged-list? 'register)
+                                                (dict-values assignments)))]
+                [(num-reg) (set-count regs-used)]
+                [(spill-locs) (dict-ref frame-info 'num-spill-locs)]
+                [(spill-size) (+ spill-locs num-reg)]
+                [(fixed-loc) (dict-ref frame-info 'fixed-loc)]
+                [(reg-save) (for/list ([reg-entry regs-used]
+                                       [loc (in-naturals spill-locs)])
+                              (match reg-entry
+                                [(list 'register reg)
+                                 (cons reg
+                                       (list 'spill loc))]))]
+                [(stack-assignments)
+                 (for/list ([(var loc) (in-dict assignments)])
+                   (let ([fixed (dict-ref fixed-loc var #f)])
+                     (if fixed
+                         (cons var fixed)
+                         (match loc
+                           [(list (or 'spill 'frame) n)
+                            (cons var loc)]
+                           [(list 'register n)
+                            (cons var (dict-ref reg-save n))]))))]
                 [(frame-size) (+ 1 stack-formals spill-size)]
-                [(save-offset) num-reg]
-                [(spill-offset) spill-size]
                 [(skip-frame-setup) (and is-leaf
                                          (= num-reg (dict-count assignments)))])
     (values assignments
             intervals
             (dict-set* frame-info
                        'is-leaf is-leaf
-                       'spill-offset spill-offset
-                       'spill-size spill-size
-                       'save-offset save-offset
+                       'spill-offset spill-size
+                       'stack-assignments stack-assignments
                        'frame-size frame-size
                        'skip-frame-setup skip-frame-setup))))
 
@@ -842,6 +858,7 @@
        [(asm) empty]
        [(before) empty]
        [(after) empty]
+       [(stack-assignments) (dict-ref frame-info 'stack-assignments)]
        [(lazy-load) empty]
        [(pending-label) no-label])
     (define (fmt-asm dir)
@@ -857,7 +874,6 @@
       (set! after (cons line after)))
     (define/match (loc-stack-offset loc)
       [((list 'frame n)) (- (dict-ref frame-info 'frame-size) n)]
-      [((list 'save n)) (- (dict-ref frame-info 'save-offset) n)]
       [((list 'spill n)) (- (dict-ref frame-info 'spill-offset) n)])
     (define (load-spilled reg loc (v #f) (reason "spilled"))
       (fmt-asm (list 'lw sp-reg reg (loc-stack-offset loc)
@@ -914,21 +930,19 @@
                          (> (interval-end interval) pos))))
                 reg-vars)))
     (define (save-regs-for-call pos except)
-      (for ([assignment (dict-remove (reg-vars-live-past pos)
-                                     except)]
-            [n (in-naturals)])
-        (emit-line (store-spilled (register-num (cdr assignment))
-                                  (list 'save n)
-                                  (car assignment)
+      (for ([(var reg) (in-dict (dict-remove (reg-vars-live-past pos)
+                                             except))])
+        (emit-line (store-spilled (register-num reg)
+                                  (dict-ref stack-assignments var)
+                                  var
                                   "saved"))))
     (define (restore-regs-for-call pos except)
-      (for ([assignment (dict-remove (reg-vars-live-past pos)
-                                     except)]
-            [n (in-naturals)])
-        (emit-line (load-spilled (register-num (cdr assignment))
-                                 (list 'save n)
-                                 (car assignment)
-                                 "restored"))))
+      (for ([(var reg) (in-dict (dict-remove (reg-vars-live-past pos)
+                                             except))])
+        (emit-line (load-spilled (register-num reg)
+                                  (dict-ref stack-assignments var)
+                                  var
+                                  "restored"))))
     (define (marshal-args args pos)
       ;; Marshals arguments into registers for a function call.
       ;;
@@ -951,13 +965,16 @@
                                          (equal? (dict-ref assignments a)
                                                  (list 'register dest)))
                                        remain))]
-                 [save-to (and conflict (list 'save dest))]
-                 [from-stack (dict-ref spilled reg #f)]
-                 [use-loc (or from-stack loc)])
-            (when (> dest 3)
-              (error "need to add support for stack args!"))
+                 [was-saved (member arg saved)] ;; were we saved out?
+                 [use-loc (if was-saved
+                              (dict-ref stack-assignments arg)
+                              loc)])
+            ;; if something is in the destination register, spill it
             (when conflict
-              (emit-line (store-spilled dest save-to #f "arg")))
+              (emit-line (store-spilled dest
+                                        (dict-ref stack-assignments conflict)
+                                        #f
+                                        "arg")))
             (match use-loc
               [(list 'register n)
                (unless (= n dest)
@@ -965,8 +982,8 @@
               [(? list?)
                (emit-line (load-spilled dest use-loc arg "arg"))])
             (marshal remain (add1 dest) (if conflict
-                                            (dict-set spilled dest save-to)
-                                            spilled)))))
+                                            (cons conflict saved)
+                                            saved)))))
       (marshal args 1 empty))
 
     (define (emit-unwrapped! . dir)
