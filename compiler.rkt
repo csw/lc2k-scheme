@@ -181,9 +181,11 @@
            ;;[(list 'cdr v)           `(%cdr ,(expand-prims v))]
            [(list '+ x y)           `(%add ,(expand-prims x)
                                            ,(expand-prims y))]
+           [(list '- x)             `(%add 1
+                                           ,(expand-prims (list 'bitwise-not x)))]
            [(list 'bitwise-and x y) `(%band ,(expand-prims x)
                                             ,(expand-prims y))]
-           [(list 'bitwise-or x y) `(%nand ,(expand-prims `(bitwise-not ,x))
+           [(list 'bitwise-ior x y) `(%nand ,(expand-prims `(bitwise-not ,x))
                                            ,(expand-prims `(bitwise-not ,y)))]
            [(list 'bitwise-not x)  `(%bnot ,(expand-prims x))]
            [else #f])])
@@ -413,14 +415,13 @@
                 code-exp)
   (let* ([env (make-env (global-env))]
          [insns empty]
-         [n-temp 0]
-         [k 3])
+         [n-temp 0])
     (define (emit! . args)
       (if (list? (car args))
           (apply emit! (car args))
           (set! insns (cons args insns))))
     (define (emit-all! . l)
-      (for-each emit! l))
+      (for-each (lambda (argl) (apply emit! argl)) l))
     (define (alloc-temp)
       (begin0
           (list 'temp n-temp)
@@ -482,15 +483,13 @@
                 referent]))]
           ;; unary primitive
           [(list 'primcall prim arg)
-           (let ([op-label (internal-label)]
-                 [dest (or dd (alloc-temp))])
-             (cg arg #f op-label op-label)
+           (let* ([op-label (internal-label)]
+                  [dest (or dd (alloc-temp))]
+                  [arg-reg (cg arg #f op-label op-label)])
              (emit! 'label op-label)
              (match prim
-               ['%bnot (emit! 'nand dest dest dest)]
-               ['%car #f] ;; TODO
-               ['%cdr #f])
-             dd)]
+               ['%bnot (emit! 'nand arg-reg arg-reg dest)])
+             dest)]
           ;; binary primitive
           [(list 'primcall prim arg1 arg2)
            (let* ([op-label (internal-label)]
@@ -502,9 +501,8 @@
              (match prim
                ['%add  (emit! 'add t1 t2 dest)]
                ['%nand (emit! 'nand t1 t2 dest)]
-               ['%band (emit-all!
-                        `((nand ,t1 ,t2 ,dest)
-                          (nand ,dest ,dest ,dest)))])
+               ['%band (emit! 'nand t1 t2 dest)
+                       (emit! 'nand dest dest dest)])
              dest)]
           ;; function call
           [(list 'labelcall sym args ...)
