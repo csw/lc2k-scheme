@@ -764,6 +764,27 @@
 (define (spill-sp-offset loc)
   (+ 5 loc))
 
+;; analyze-frame: wraps the register allocator, performs extra
+;; post-processing and analysis.
+;;
+;; (analyze-frame code sasm)
+;;   code: function definition, as:
+;;       (code (arg1 arg2 ...) body-expr)
+;;   sasm: low-level 'symbolic assembly' IR from gen-ir
+;;
+;; Returns values:
+;;   assignments: alist dict
+;;     keys:   (temp N) | return-addr
+;;     values: (register N) | (spill N)
+;;
+;;   intervals: list of interval record lists, each as follows:
+;;     (var interval-begin interval-end asm)
+;;     var: a valid key for assignments
+;;     interval-begin, interval-end: positions in sasm
+;;     asm: record from sasm
+;;
+;;   frame-info: alist dict
+
 (define (analyze-frame code sasm)
   (let*-values ([(assignments intervals frame-info)
                  (linear-scan-alloc sasm)]
@@ -876,6 +897,12 @@
         [(list 'register n)
          n]
         [(? integer?) v]))
+    ;;
+    ;; (reg-vars-live-past pos)
+    ;;
+    ;; Returns subset of assignments, with only variables in registers
+    ;; holding live values before pos which remain live after pos.
+    ;;
     (define (reg-vars-live-past pos)
       (let ([reg-vars (filter (compose (curry tagged-list? 'register)
                                        cdr)
@@ -903,16 +930,23 @@
                                  (car assignment)
                                  "restored"))))
     (define (marshal-args args pos)
-      ;; This turned out to be a far bigger mess than I was
-      ;; anticipating. 
-      (define (marshal ctx dest spilled)
+      ;; Marshals arguments into registers for a function call.
+      ;;
+      ;; Tricky because we are likely using the arg registers (1-3)
+      ;; for variables. If r1 has to move to r3 and r3 has to move to
+      ;; r1, the obvious way won't work.
+      ;;
+      ;; For each one, we see if we have an arg in its destination
+      ;; register already. If so, we save that one temporarily.
+      ;;
+      (define (marshal ctx dest saved)
         (unless (empty? ctx)
-          (let* ([arg (car ctx)]
+          (let* ([arg (car ctx)] ;; var
                  [loc (dict-ref assignments arg)]
                  [reg (and (tagged-list? 'register loc)
                            (register-num loc))]
                  [remain (cdr ctx)]
-                 [conflict (and reg
+                 [conflict (and reg ;; var in our destination register 
                                 (findf (lambda (a)
                                          (equal? (dict-ref assignments a)
                                                  (list 'register dest)))
@@ -1015,6 +1049,7 @@
              (emit! 'add sp-reg spill-s1-reg sp-reg
                     (format "; SP += ~a" frame-size)))
            (emit! 'jalr addr-reg spill-s1-reg "; return"))]
+        ;; prologue
         [(list 'prologue)
          (unless (dict-ref frame-info 'skip-frame-setup)
            (emit! 'lw 0 spill-s1-reg (const-ref (- (dict-ref frame-info
