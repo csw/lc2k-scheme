@@ -208,6 +208,7 @@
 (define (expand-if-pred exp)
   (let ([expanded (expand-prims exp)])
     (match expanded
+      ;; eq? or zero?
       [(list-rest (? prim-predicate?) ... args) expanded]
       ;; XXX: review this
       [else `(%eq? #t ,expanded)])))
@@ -226,7 +227,9 @@
    [(? if?)         `(if ,(expand-if-pred (if->condition exp))
                            ,(expand-prims (if->then exp))
                            ,(expand-prims (if->else exp)))]
-   
+   [(list (and (or 'and 'or)
+               op)
+          args ..1)         `(,op ,@(map expand-prims args))]
                                         ; Sugar:
    ;;((let? exp)        (expand-prims (let=>lambda exp)))
    ;;((letrec? exp)     (expand-prims (letrec=>lets+sets exp)))
@@ -395,6 +398,8 @@
 (define (reg-ref n)
   (list 'register n))
 
+(define reg0 (reg-ref 0))
+
 (define reg-n (make-parameter 0))
 
 (define (spill-code reg)
@@ -415,26 +420,26 @@
 
 (define (gen-pred-code pred true-label false-label next-label)
   ;;
-  ;; (gen-sequence init-continue targets): return a code list for a
-  ;;     sequence of conditional expressions.
+  ;; (gen-sequence conditions init-continue targets): return a code
+  ;;     list for a list of conditional expressions.
   ;;
-  ;; init-continue: the label for which code will be generated after
-  ;;     this sequence (= next-label for cg)
+  ;; conditions: list of conditional expressions.
   ;;
   ;; targets: a function which, given the following label in sequence,
-  ;;     will return two values, the true and false branch targets.
-  ;;     For (and ...) these should be (following false-label); for
-  ;;     (or ...) they should be (true-label following).
+  ;;     or #f for end-of sequence, will return two values, the true
+  ;;     and false branch targets.  For (and ...) these should be
+  ;;     (following false-label); for (or ...) they should be
+  ;;     (true-label following).
   ;;
-  (define (gen-sequence init-continue targets)
+  (define (gen-sequence conditions targets)
     (let-values ([(labels fol code)
-                  (for/fold ([continue-to init-continue]
-                             [following   next-label]
+                  (for/fold ([following   false-label]
+                             [cond-after  #f]
                              [code-after  empty])
-                      ([cond (reverse targets)])
+                      ([cond (reverse conditions)])
                     (let*-values
                         ([(cond-label) (internal-label)]
-                         [(true-l false-l) (targets following)]
+                         [(true-l false-l) (targets cond-after)]
                          [(cond-code) (gen-pred-code cond
                                                      true-l
                                                      false-l
@@ -449,48 +454,24 @@
     [(list 'primcall %eq? pa0 pa1)
      ;;(list (list 'cjump 'eq pa0 pa1 true-label false-label))
      (if (eqv? false-label next-label)
-         (list (list 'beq pa0 pa1 true-label))
-         (list (list 'beq pa0 pa1 true-label)
-               (list 'beq 0   0   false-label)))
-     ;; (list (list 'beq pa0 pa1 true-label)
-     ;;       (list 'beq 0   0   false-label))
-     ]
+         (list (list 'beq pa0  pa1 true-label))
+         (list (list 'beq pa0  pa1 true-label)
+               (list 'beq reg0 reg0   false-label)))]
+    [(list 'primcall %zero? pa0)
+     (if (eqv? false-label next-label)
+         (list (list 'beq reg0 pa0 true-label))
+         (list (list 'beq reg0 pa0 true-label)
+               (list 'beq reg0 reg0   false-label)))]
     [(list-rest 'and conditions)
-     ;; (gen-sequence next-label (lambda (following)
-     ;;                            (values following false-label)))
-     (let-values ([(labels fol code)
-                   (for/fold ([continue-to true-label]
-                              [following   next-label]
-                              [code-after  empty])
-                       ([cond (reverse conditions)])
-                     (let ([cond-label (internal-label)]
-                           [cond-code (gen-pred-code cond
-                                                     continue-to
-                                                     false-label
-                                                     following)])
-                       (values cond-label
-                               cond-label
-                               (append (list (list 'label cond-label))
-                                       cond-code
-                                       code-after))))])
-       (cdr code))]
+     (gen-sequence conditions
+                   (lambda (following)
+                     (values (or following true-label)
+                             false-label)))]
     [(list-rest 'or conditions)
-     (let-values ([(labels fol code)
-                   (for/fold ([continue-to false-label]
-                              [following   next-label]
-                              [code-after  empty])
-                       ([cond (reverse conditions)])
-                     (let ([cond-label (internal-label)]
-                           [cond-code (gen-pred-code cond
-                                                     true-label
-                                                     continue-to
-                                                     following)])
-                       (values cond-label
-                               cond-label
-                               (append (list (list 'label cond-label))
-                                       cond-code
-                                       code-after))))])
-       (cdr code))]))
+     (gen-sequence conditions
+                   (lambda (following)
+                     (values true-label
+                             (or following false-label))))]))
 
 ;; simple stack frame handling for now
 (define *frame-size* 16)
@@ -554,6 +535,9 @@
              (emit! 'lw 0 reg cname
                     (format "; ~a = ~a" reg exp))
              reg)]
+          ;; register reference
+          [(list 'register n)
+           exp]
           ;; symbol
           [(? symbol?)
            (let* ([referent (env-lookup env exp)])
@@ -613,36 +597,36 @@
            (let* ([true-label (internal-label)]
                   [false-label (internal-label)]
                   [branch-label (internal-label)]
-                  [dest (or dd (alloc-temp))]
-                  [registers
-                   (match if-pred
-                     [(list 'primcall '%zero? pa0) ;; %zero v
-                      (list '(register 0)
-                            (cg pa0 #f branch-label branch-label))]
-                     [(list 'primcall '%eq? pa0 pa1)
-                      (gen-children pa0 pa1 branch-label)])])
-             (emit! 'label branch-label)
-             (emit! 'beq (car registers) (cadr registers) true-label
-                    (format "; ~v" exp))
+                  [dest (or dd (alloc-temp))])
+             (for ([stmt (gen-pred-code if-pred
+                                        true-label false-label false-label)])
+               (match stmt
+                 [(list 'label (? string?))
+                  (apply emit! stmt)]
+                 [(list 'beq arg0 arg1 target-label)
+                  (let* ([branch-label (internal-label)]
+                         [registers (gen-children arg0 arg1 branch-label)])
+                    (emit! 'label branch-label)
+                    (emit! 'beq (car registers) (cadr registers) target-label))]))
              (emit! 'label false-label)
              (cg if-else dest cd true-label)
              (emit! 'label true-label)
-             (cg if-then dest cd next-label))]))
-      (when *debug-codegen*
-        (trace alloc-temp)
-        (trace cg))
+             (cg if-then dest cd next-label))]))      
       (let ([result (gen-code)])
         (cond
          [(tagged-list? 'if exp) #f]
          ;; expression in tail position, return
          [(eq? cd 'return)
           (emit! 'return result 'return-addr)]
-         ;; continue directly to next label
-         [(eq? cd next-label) #t]
+         ;; continue directly to next label (or whatever)
+         ;; when next-label is #f or the same as cd
+         [(or (not next-label) (eq? cd next-label)) #t]
          ;; jump to next label
          [else (emit! 'beq 0 0 cd)])
         result))
+    
     (when *debug-codegen*
+      (trace alloc-temp)
       (trace cg))
     (emit! 'noop (format "; ~v" code-exp))
     ;; function entry point
@@ -930,6 +914,49 @@
 ;; 0: <callee frame start>
 ;; 1+: arguments 
 
+(define (internal-label? name)
+  (and (string? name)
+       (eqv? (string-ref name 0) #\I)))
+
+(define (label-cleanup sasm)
+  (let*-values ([(_ canonical used)
+                 (for/fold ([cur-label #f]
+                            ;; label => canonical label name
+                            [int-labels empty]
+                            [labels-used (set)])
+                     ([stmt sasm])
+                   (match stmt
+                     ;; internal label
+                     [(list 'label (? internal-label? name))
+                      (if cur-label
+                          ;; later label, to alias
+                          (values cur-label
+                                  (dict-set int-labels name cur-label)
+                                  labels-used)
+                          ;; first label in a group
+                          (values name
+                                  (dict-set int-labels name name)
+                                  labels-used))]
+                     ;; branch to internal label
+                     [(list 'beq a b (? internal-label? target))
+                      (values #f int-labels (set-add labels-used target))]
+                     ;; non-code-generating directive
+                     [(list 'bind args ...)
+                      (values cur-label int-labels labels-used)]
+                     ;; anything else
+                     [else
+                      (values #f int-labels labels-used)]))]
+                [(to-emit)
+                 (list->set (map (curry dict-ref canonical) (set->list used)))])
+    (filter (lambda (stmt)
+              (match stmt
+                [(list 'label name)
+                 (or (not (internal-label? name))
+                     (set-member? to-emit name))]
+                [else
+                 #t]))
+            sasm)))
+
 ;; gen-asm: Generates actual LC2K assembly from the low-level IR.
 ;;
 ;; - Calls linear-scan-alloc to perform register allocation.
@@ -1207,8 +1234,8 @@
   (define (compile-fun code label)
     (for-each displayln
               (gen-asm code
-                       (gen-ir (expand-prims code)
-                               label))))
+                       (label-cleanup (gen-ir (expand-prims code)
+                                              label)))))
   (for-each displayln *runtime-text*)
   (match prog
     [(list 'labels
