@@ -3,21 +3,26 @@
 (require "driver.rkt")
 (require "compiler.rkt")
 
+(define (for-racket-eval code)
+  (if (and (list? code) (list? (car code)))
+      (cons 'begin code)
+      code))
+
+(define (test-case code (expect #f))
+  (let* ([expected (or expect (eval (for-racket-eval code)))]
+         [result (compile-ret code)])
+    (unless (equal? result expected)
+      (raise-arguments-error 'test-case
+                             "Obtained wrong result"
+                             "code"     code
+                             "expected" expected
+                             "result"   result))))
+
 (define (run-tests)
   (let ([section #f])
     (define (test-section s)
+      (displayln (format "Section: ~a" s))
       (set! section s))
-    (define (test-case code (expect #f))
-      (displayln (format "Testing ~a" code))
-      (let* ([expect-r (or expect (eval code))]
-             [result (compile-ret code)])
-        (unless (equal? result expect-r)
-          (raise-arguments-error 'test-case
-                                 "Obtained wrong result"
-                                 "section" section
-                                 "code"   code
-                                 "expect" expect-r
-                                 "result" result))))
     (test-section "Constant loading and returning")
     (test-case '58 58)
     (test-case '0 0)
@@ -47,6 +52,8 @@
     (test-case '(+ (if (empty? empty) 1 99)
                    (+ (if (zero? 1) 2000 20)
                       373)))
+    (test-section "Complex conditionals")
+    (test-case '(if (or (zero? 5) (and (zero? 0) (= 5 5))) 1 0))
     (test-section "Conses")
     ;;(test-case '(empty? empty) #t)
     (test-section "Functions")
