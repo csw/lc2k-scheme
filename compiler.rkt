@@ -179,6 +179,8 @@
            ;; simple but unsafe versions of common functions
            ;;[(list 'car v)           `(%car ,(expand-prims v))]
            ;;[(list 'cdr v)           `(%cdr ,(expand-prims v))]
+           [(list '= x y)           `(%eq? ,(expand-prims x)
+                                           ,(expand-prims y))]
            [(list '+ x y)           `(%add ,(expand-prims x)
                                            ,(expand-prims y))]
            [(list '- x)             `(%add 1
