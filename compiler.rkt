@@ -412,6 +412,86 @@
 (define (code-formals code)
   (cadr code))
 
+
+(define (gen-pred-code pred true-label false-label next-label)
+  ;;
+  ;; (gen-sequence init-continue targets): return a code list for a
+  ;;     sequence of conditional expressions.
+  ;;
+  ;; init-continue: the label for which code will be generated after
+  ;;     this sequence (= next-label for cg)
+  ;;
+  ;; targets: a function which, given the following label in sequence,
+  ;;     will return two values, the true and false branch targets.
+  ;;     For (and ...) these should be (following false-label); for
+  ;;     (or ...) they should be (true-label following).
+  ;;
+  (define (gen-sequence init-continue targets)
+    (let-values ([(labels fol code)
+                  (for/fold ([continue-to init-continue]
+                             [following   next-label]
+                             [code-after  empty])
+                      ([cond (reverse targets)])
+                    (let*-values
+                        ([(cond-label) (internal-label)]
+                         [(true-l false-l) (targets following)]
+                         [(cond-code) (gen-pred-code cond
+                                                     true-l
+                                                     false-l
+                                                     following)])
+                      (values cond-label
+                              cond-label
+                              (append (list (list 'label cond-label))
+                                      cond-code
+                                      code-after))))])
+      (cdr code)))
+  (match pred
+    [(list 'primcall %eq? pa0 pa1)
+     ;;(list (list 'cjump 'eq pa0 pa1 true-label false-label))
+     (if (eqv? false-label next-label)
+         (list (list 'beq pa0 pa1 true-label))
+         (list (list 'beq pa0 pa1 true-label)
+               (list 'beq 0   0   false-label)))
+     ;; (list (list 'beq pa0 pa1 true-label)
+     ;;       (list 'beq 0   0   false-label))
+     ]
+    [(list-rest 'and conditions)
+     ;; (gen-sequence next-label (lambda (following)
+     ;;                            (values following false-label)))
+     (let-values ([(labels fol code)
+                   (for/fold ([continue-to true-label]
+                              [following   next-label]
+                              [code-after  empty])
+                       ([cond (reverse conditions)])
+                     (let ([cond-label (internal-label)]
+                           [cond-code (gen-pred-code cond
+                                                     continue-to
+                                                     false-label
+                                                     following)])
+                       (values cond-label
+                               cond-label
+                               (append (list (list 'label cond-label))
+                                       cond-code
+                                       code-after))))])
+       (cdr code))]
+    [(list-rest 'or conditions)
+     (let-values ([(labels fol code)
+                   (for/fold ([continue-to false-label]
+                              [following   next-label]
+                              [code-after  empty])
+                       ([cond (reverse conditions)])
+                     (let ([cond-label (internal-label)]
+                           [cond-code (gen-pred-code cond
+                                                     true-label
+                                                     continue-to
+                                                     following)])
+                       (values cond-label
+                               cond-label
+                               (append (list (list 'label cond-label))
+                                       cond-code
+                                       code-after))))])
+       (cdr code))]))
+
 ;; simple stack frame handling for now
 (define *frame-size* 16)
 
