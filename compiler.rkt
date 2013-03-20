@@ -58,7 +58,7 @@
 
 (define tagged-mask  #b11000000000000000000000000000000)
 (define tagged-tag   #b01000000000000000000000000000000)
-(define tag-mask     #xEF000000)
+(define tag-mask     #xFF000000)
 (define no-tag-mask  (bitwise-not tag-mask))
 (define tag-shift    24)
 (define tag-end      32)
@@ -170,12 +170,15 @@
   (let ([expanded
          (match exp
            [(list 'empty? v)        `(%eq? ,(expand-prims v) empty)]
-           [(list 'pair? v)         `(%tagged? list-tag ,(expand-prims v))]
-           [(list '%tagged? tag v)  `(%zero? (%band tag ,(expand-prims v)))]
+           [(list '%tagged? mask tag v)
+            `(%eq? (primcall %band
+                             ,(expand-prims mask)
+                             ,(expand-prims v))
+                   ,(expand-prims tag))]
            [(list '%ptr v)          `(%and ,(expand-prims v) pointer-mask)]
            ;;[(list '%car v)          `(%load (%ptr ,(expand-prims v)) 0)]
            ;;[(list '%cdr v)          `(%load (%ptr ,(expand-prims v)) 1)]
-           [(list 'zero? v)         `(%zero? ,(expand-prims v))]
+           ;;[(list 'zero? v)         `(%zero? ,(expand-prims v))]
            ;; simple but unsafe versions of common functions
            ;;[(list 'car v)           `(%car ,(expand-prims v))]
            ;;[(list 'cdr v)           `(%cdr ,(expand-prims v))]
@@ -208,12 +211,19 @@
                   (map expand-prims (cdr exp))))))
 
 (define (expand-if-pred exp)
-  (let ([expanded (expand-prims exp)])
-    (match expanded
-      ;; eq? or zero?
-      [(list-rest (? prim-predicate?) ... args) expanded]
-      ;; XXX: review this
-      [else `(%eq? #t ,expanded)])))
+  (match exp
+    [(list (? prim-predicate? pred) args ...)
+     (list* 'primcall pred (map expand-prims args))]
+    ;; and, or
+    [(list (and op (or 'and 'or)) args ...)
+     (list* op (map expand-if-pred args))]
+    [else
+     ;; XXX: review all this
+     (let ([expanded (expand-prims exp)])
+       (match expanded
+         ;; eq? or zero?
+         [(list-rest 'primcall (? prim-predicate?) ... args) expanded]
+         [else `(not (primcall %eq? #f ,expanded))]))]))
 
 (define (expand-prims exp)
   (match exp
@@ -313,6 +323,16 @@
     (car  . "Lcar")
     (cdr  . "Lcdr")))
 
+(define immed-constants
+  `((empty . ,empty-list-v)
+    (#t . ,true-v)
+    (#f . ,false-v)
+    (%tagged-mask . ,tagged-mask)
+    (%tagged-tag  . ,tagged-tag)
+    (%tag-mask . ,tag-mask)
+    (%char-tag . ,char-tag)
+    (%bool-tag . ,bool-tag)))
+
 (define (init-global-env)
   (set! num-environments 0)
   (set! environments empty)
@@ -321,12 +341,10 @@
   (set! constant-n 0)
   (set! lambda-n 0)
   (set! internal-n 0)
-  (for ([def `((empty . (immediate ,empty-list-v))
-               (#t . (immediate ,true-v))
-               (#f . (immediate ,false-v)))])
+  (for ([def immed-constants])
     (env-define (global-env)
                 (car def)
-                (cdr def)))
+                (list 'immediate (cdr def))))
   (for ([fdef *asm-functions*])
     (env-define (global-env)
                 (car fdef)
@@ -464,6 +482,8 @@
          (list (list 'beq reg0 pa0 true-label))
          (list (list 'beq reg0 pa0 true-label)
                (list 'beq reg0 reg0   false-label)))]
+    [(list 'not cond)
+     (gen-pred-code cond false-label true-label next-label)]
     [(list-rest 'and conditions)
      (gen-sequence conditions
                    (lambda (following)
@@ -480,7 +500,7 @@
 
 (define *debug-codegen* #f)
 
-(define (gen-ir code-exp entry-label)
+(define (gen-ir code-exp entry-label (fun-name "<anon>"))
   (match-define (list 'code (list formals ...) body-exp)
                 code-exp)
   (let* ([env (make-env (global-env))]
@@ -630,7 +650,7 @@
     (when *debug-codegen*
       (trace alloc-temp)
       (trace cg))
-    (emit! 'noop (format "; ~v" code-exp))
+    (emit! 'noop (format "; [~a] ~v" fun-name code-exp))
     ;; function entry point
     (emit! 'label entry-label)
     (emit! 'prologue)
@@ -709,8 +729,12 @@
           (hash-set! starts dest i))
         (for ([src (ir-sources stmt)])
           (hash-set! ends src i))))
+    ;; any we haven't set an end for haven't been used at all
+    (for ([no-end-for (remove* (dict-keys ends) (dict-keys starts))])
+      (hash-set! ends no-end-for (hash-ref starts no-end-for)))
     (cond
      [(= (hash-count starts) (hash-count ends)) #t]
+     ;; shouldn't happen
      [(> (hash-count starts) (hash-count ends))
       (error 'linear-scan-build-intervals
              "no end found for: ~v"
@@ -1231,33 +1255,98 @@
         (format "ctag    .fill ~a" cons-tag)
         (format "pmask   .fill ~a" pointer-mask)))
 
+(define *code-source* (make-parameter #f))
+(define *code-elt* (make-parameter #f))
+
+(struct pass (name proc arg-keys))
+
+(define (pass-args pass env)
+  (map (curry dict-ref env)
+       (pass-arg-keys pass)))
+
+(define (run-pass pass env)
+  (dict-set env (pass-name pass)
+            (apply (pass-proc pass)
+                   (pass-args pass env))))
+
+(define compiler-passes
+  (list (pass 'desugar
+              expand-prims '(code))
+        (pass 'ir1
+              gen-ir '(desugar label name))
+        (pass 'ir1a
+              label-cleanup '(ir1))
+        (pass 'asm
+              gen-asm '(code ir1a))
+        (pass 'output
+              (curry for-each displayln) '(asm))))
+
+(define (compile-fun code label name)
+  (parameterize ([*code-elt* name])
+    (for/fold ([comp-env (list (cons 'code code)
+                               (cons 'label label)
+                               (cons 'name name))])
+        ([pass compiler-passes])
+      (with-handlers
+          ([exn:fail?
+            (lambda (exn)
+              (eprintf "Error compiling ~a (from ~a)!~n"
+                       (*code-elt*) (*code-source*))
+              (pretty-print code (current-error-port))
+              (eprintf "Error in pass ~a (~v), with args:~n"
+                       (pass-name pass)
+                       (pass-proc pass))
+              (for ([key (pass-arg-keys pass)]
+                    [arg (pass-args pass comp-env)])
+                (eprintf "~a: ~a~n"
+                         key (pretty-format arg)))
+              (raise exn))])
+        (run-pass pass comp-env)))))
+
+(define (compile-code prog origin (compile-toplevel #f))
+  (parameterize ([*code-source* origin])
+    (match prog
+      [(list 'labels
+             (list (list lvars lexprs) ...)
+             top-expr)
+       (for ([lvar lvars]
+             [lexpr lexprs])
+         (let ([label (lambda-label)])
+           (env-define (global-env) lvar (list 'fun-label label))
+           (compile-fun lexpr label lvar)))
+       (when compile-toplevel
+         (let ([top-label (lambda-label)])
+           (compile-fun `(code () ,top-expr) top-label "<toplevel>")         
+           top-label))])))
+
+(define *scheme-runtime-file* "runtime.scm")
+
+(define (load-code file)
+  (transform-program (file->list file)))
+
 (define (compile-top prog)
-  (init-global-env)
-  (define (compile-fun code label)
-    (for-each displayln
-              (gen-asm code
-                       (label-cleanup (gen-ir (expand-prims code)
-                                              label)))))
-  (for-each displayln *runtime-text*)
-  (match prog
-    [(list 'labels
-           (list (list lvars lexprs) ...)
-           top-expr)
-     (for ([lvar lvars]
-           [lexpr lexprs])
-       (let ([label (lambda-label)])
-         (env-define (global-env) lvar (list 'fun-label label))
-         (compile-fun lexpr label)))
-     (let ([entry-label (lambda-label)])
-       (compile-fun `(code () ,top-expr) entry-label)
-       (for-each displayln (runtime-data entry-label)))])
-  (write-constant-defs)
-  (for ([label-entry (in-hash-values (env-dict (global-env)))]
-        #:when (tagged-list? 'fun-label label-entry))
-    (let ([label-name (cadr label-entry)])
-      (displayln (format "~a    .fill ~a"
-                         (lambda-addr-label label-name)
-                         label-name)))))
+  (parameterize ([current-trace-notify
+                  (lambda (t)
+                    (displayln t (current-error-port)))])
+    (init-global-env)
+    ;; write the raw asm runtime directly
+    (for-each displayln *runtime-text*)
+    ;; compile the Scheme runtime
+    (compile-code (load-code *scheme-runtime-file*)
+                  *scheme-runtime-file*)
+    ;; compile the user code
+    (let ([entry-label (compile-code prog 'user #t)])
+      ;; and now write the runtime support data
+      (for-each displayln (runtime-data entry-label)))
+    ;; and constant pool
+    (write-constant-defs)
+    ;; and now the function entry points
+    (for ([label-entry (in-hash-values (env-dict (global-env)))]
+          #:when (tagged-list? 'fun-label label-entry))
+      (let ([label-name (cadr label-entry)])
+        (displayln (format "~a    .fill ~a"
+                           (lambda-addr-label label-name)
+                           label-name))))))
 
 ;; convert to our labels / code representation
 (define (transform-program prog)
