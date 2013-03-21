@@ -47,6 +47,9 @@
   ;; synonymous with integer? for now...
   (if (%tagged? %tagged-mask %tagged-tag v) #f #t))
 
+(define (procedure? v)
+  (if (%tagged? %type-tag-mask %proc-tag v) #t #f))
+
 ;; (define (%multiply mcand mplier acc mask)
 ;;   (if (= mask %max-fixnum-bit)
 ;;       acc

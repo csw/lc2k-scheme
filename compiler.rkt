@@ -376,6 +376,7 @@
     (%char-tag       . ,char-tag)
     (%bool-tag       . ,bool-tag)
     (%cons-tag       . ,cons-tag)
+    (%proc-tag       . ,proc-tag)
     (%sign-bit       . ,(expt 2 31))
     (%max-fixnum-bit . ,(expt 2 29))
     (%all-ones       . ,(bitwise-not 0))))
