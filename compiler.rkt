@@ -717,7 +717,13 @@
                [(lw) (list (second stmt))]
                [(sw) (list (second stmt) (third stmt))]
                [(labelcall) (cdddr stmt)]
-               [(proc-call tail-call) (cddr stmt)]
+               [(proc-call) (cddr stmt)]
+               [(tail-call)
+                (match stmt
+                  [(list 'tail-call (and target (list 'local _)) _ ...)
+                   (cdr stmt)]
+                  [else
+                   (cddr stmt)])]
                [(beq) (list (second stmt) (third stmt))]
                [(return) (list (second stmt) (third stmt))]
                [(noop label bind prologue) empty]
@@ -916,6 +922,7 @@
                  (linear-scan-alloc sasm)]
                 [(is-leaf) (not (findf (lambda (stmt)
                                          (or (tagged-list? 'labelcall stmt)
+                                             ;; XXX: review
                                              (tagged-list? 'tail-call stmt)
                                              (tagged-list? 'proc-call stmt)))
                                        sasm))]
@@ -1251,18 +1258,22 @@
            (restore-regs-for-call pos dest-var))]
         ;; tail-call
         [(list 'tail-call target ret-addr-ref args ...)
-         ;; marshal arguments into registers
-         ;; XXX: need to revisit for stack args
-         (marshal-args args pos)
-         ;; call for side effect, to ensure return addr is in its register
-         (subst-src ret-addr-ref pos ret-reg)
          (match target
            ;; self tail call
            [(? string?)
+            ;; marshal arguments into registers
+            ;; XXX: need to revisit for stack args
+            (marshal-args args pos)
+            ;; call for side effect, to ensure return addr is in its register
+            (subst-src ret-addr-ref pos ret-reg)
             (emit! 'beq 0 0 target
                    "; self-tail-call")]
            ;; tail call by label
            [(struct proc _)
+            ;; marshal arguments into registers
+            (marshal-args args pos)
+            ;; call for side effect, to ensure return addr is in its register
+            (subst-src ret-addr-ref pos ret-reg)
             (let ([target-addr-label (proc-addr-label target)]
                   [frame-size (dict-ref frame-info 'frame-size)])
               (unless (dict-ref frame-info 'skip-frame-setup)
@@ -1272,7 +1283,26 @@
               (emit! 'lw 0 spill-s1-reg target-addr-label
                      "; load target address")
               (emit! 'jalr spill-s1-reg spill-s2-reg
-                     (format "; tail-call ~a" target-addr-label)))])]
+                     (format "; tail-call ~a" (proc-name target))))]
+           ;; tail call by pointer
+           [(list 'local proc-var)
+            (let* ([target-reg spill-s2-reg]
+                   [proc-reg (subst-src target pos target-reg)]
+                   [frame-size (dict-ref frame-info 'frame-size)])
+              (emit! 'lw   0 spill-s1-reg (const-ref pointer-mask)
+                     "; load pointer mask")
+              (emit! 'nand spill-s1-reg proc-reg target-reg)
+              (emit! 'nand target-reg target-reg target-reg)
+              ;; marshal arguments into registers
+              (marshal-args args pos)
+              ;; call for side effect, to ensure return addr is in its register
+              (subst-src ret-addr-ref pos ret-reg)
+              (unless (dict-ref frame-info 'skip-frame-setup)
+                (emit! 'lw 0 spill-s1-reg (const-ref frame-size))
+                (emit! 'add sp-reg spill-s1-reg sp-reg
+                       (format "; SP += ~a" frame-size)))
+              (emit! 'jalr target-reg spill-s1-reg
+                     (format "; tail-call ~a" proc-var)))])]
         ;; return
         [(list 'return rv-ref addr-ref)
          (let ([rv-cur-reg (subst-src rv-ref pos rv-reg)]

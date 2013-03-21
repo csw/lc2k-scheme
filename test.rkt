@@ -123,4 +123,10 @@
          ;; not in tail position
          (+ (f 1 2) 9))
        (use +)))
+    (test-case
+     '(
+       (define (use f)
+         ;; in tail position
+         (f 1 2))
+       (use +)))
     (displayln "All tests succeeded.")))
