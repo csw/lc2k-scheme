@@ -56,23 +56,32 @@
 ;;   symbols
 ;;   strings
 ;;
+;; Tag byte (MSB):
+;; 01pttttc
+;;   p: pointer bit
+;;   t: 4 tag bits
+;;   c: constant pointer bit
+;;
+;;
 ;; bits 31-30: 01 for tagged Scheme types, otherwise fixnum
+;;             => tag byte: tag-bits | 0x40
 ;; bit  29:    pointer (1) or immediate (0)
+;;             => tag byte: tag-bits | 0x20
 ;; bits 28-25: type tag for immediate or pointer
 ;;
-;; immediate type tags (29-25):
-;; 00000 char
-;; 00001 bool
-;; 00010 empty
+;; immediate type tags (28-25): (with hex tag byte)
+;; 0000 char        0x40
+;; 0001 bool        0x42
+;; 0010 empty       0x44
 ;;
-;; pointer type tags (29-25)
-;; 10000 cons
-;; 10001 vector
-;; 10010 string
-;; 10011 symbol
-;; 10100 procedure
-;; 10101 closure
-;; 10110 display (internal type)
+;; pointer type tags (28-25)
+;; 0000 cons        0x60 / 0x61
+;; 0001 vector      0x62 / 0x63
+;; 0010 string      0x64
+;; 0011 symbol      0x66
+;; 0100 procedure   0x68
+;; 0101 closure     0x6A
+;; 0110 environment 0x6C
 ;;
 ;; For pointers:
 ;;   bit 24: constant pointer
@@ -85,7 +94,7 @@
   (type-tag bits))
 
 (define (pointer-type-tag bits)
-  (type-tag (bitwise-ior (expt 2 5) bits)))
+  (type-tag (bitwise-ior (expt 2 4) bits)))
 
 (define tagged-mask  #b11000000000000000000000000000000)
 (define tagged-tag   #b01000000000000000000000000000000)
