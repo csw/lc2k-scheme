@@ -350,7 +350,8 @@
     (%type-tag-mask . ,type-tag-mask)
     (%char-tag      . ,char-tag)
     (%bool-tag      . ,bool-tag)
-    (%cons-tag      . ,cons-tag)))
+    (%cons-tag      . ,cons-tag)
+    (%sign-bit      . ,(expt 2 31))))
 
 (define (init-global-env)
   (set! num-environments 0)
