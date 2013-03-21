@@ -651,7 +651,9 @@
     ;; function entry point
     (emit! 'label entry-label)
     (emit! 'prologue)
+    ;; branch target for self tail calls
     (emit! 'label post-prologue)
+    ;; tell the register allocator where return-addr is
     (emit! 'bind 'return-addr 6 '(frame 0))
     (for ([formal formals]
           [reg (in-range 1 4)])
@@ -951,6 +953,9 @@
 (define (internal-label? name)
   (and (string? name)
        (eqv? (string-ref name 0) #\I)))
+
+;; Remove internal labels which are not referenced, and combine
+;; sequences of label declarations, rewriting references.
 
 (define (label-cleanup sasm)
   (let*-values ([(_ canonical used)
