@@ -152,19 +152,6 @@
 (define (prim-predicate? exp)
   (member exp prim-predicates))
 
-(define (primcall? v)
-  (and (list? v)
-       (member (primcall-op v) primitives)))
-
-(define (primcall-op x)
-  (car x))
-
-(define (primcall-operand1 x)
-  (cadr x))
-
-(define (primcall-operand2 x)
-  (caddr x))
-
 (define (ref? exp)
   (symbol? exp))
 
@@ -185,14 +172,6 @@
   (cadddr exp))
 (define (app? exp)
   (pair? exp))
-
-;; app->fun : app-exp -> exp
-(define (app->fun exp)
-  (car exp))
-
-;; app->args : app-exp -> list[exp]
-(define (app->args exp)
-  (cdr exp))
 
 (define (expand-primcall exp)
   (let ([expanded
@@ -422,20 +401,6 @@
   (list 'register n))
 
 (define reg0 (reg-ref 0))
-
-(define reg-n (make-parameter 0))
-
-(define (spill-code reg)
-  (match reg
-    [(list 'register n)
-     `((sw ,sp-reg ,n ,(+ n 1)
-           ,(format " ; save r~a" n)))]))
-
-(define (unspill-code reg)
-  (match reg
-    [(list 'register n)
-     `((lw ,sp-reg ,n ,(+ n 1)
-           ,(format " ; restore r~a" n)))]))
 
 (define (code-formals code)
   (cadr code))
