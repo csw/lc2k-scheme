@@ -329,8 +329,7 @@
 
 
 (struct proc (name num label addr-label ptr-label code
-                   [asm #:mutable #:auto] [address #:mutable #:auto])
-        #:transparent)
+                   [asm #:mutable #:auto] [address #:mutable #:auto]))
 
 (define (make-proc name expr)
   (let ([num (next-lambda)])
@@ -850,14 +849,14 @@
                                              (list 'register (car free))))
                  (set! free (cdr free))
                  (add-active i)))])))
-    (values assignments
-            (map (lambda (int live)
-                   (append int (list live)))
-                 intervals
-                 (reverse live-at))
-            (dict-set* empty
-                       'fixed-loc fixed-loc
-                       'num-spill-locs next-spill-loc))))
+    (list assignments
+          (map (lambda (int live)
+                 (append int (list live)))
+               intervals
+               (reverse live-at))
+          (dict-set* empty
+                     'fixed-loc fixed-loc
+                     'num-spill-locs next-spill-loc))))
 
 (define (last-interval-for i intervals)
   (let ([succ (and (pair? (cdr intervals))
@@ -896,9 +895,10 @@
 ;;
 ;;   frame-info: alist dict
 
-(define (analyze-frame code sasm)
-  (let*-values ([(assignments intervals frame-info)
-                 (linear-scan-alloc sasm)]
+(define (analyze-frame code sasm alloc-info)
+  (let*-values ([(assignments) (car alloc-info)]
+                [(intervals)   (cadr alloc-info)]
+                [(frame-info)   (caddr alloc-info)]
                 [(is-leaf) (not (findf (lambda (stmt)
                                          (or (tagged-list? 'labelcall stmt)
                                              ;; XXX: review
@@ -932,14 +932,12 @@
                 [(frame-size) (+ 1 stack-formals spill-size)]
                 [(skip-frame-setup) (and is-leaf
                                          (= num-reg (dict-count assignments)))])
-    (values assignments
-            intervals
-            (dict-set* frame-info
-                       'is-leaf is-leaf
-                       'spill-offset spill-size
-                       'stack-assignments stack-assignments
-                       'frame-size frame-size
-                       'skip-frame-setup skip-frame-setup))))
+    (dict-set* frame-info
+               'is-leaf is-leaf
+               'spill-offset spill-size
+               'stack-assignments stack-assignments
+               'frame-size frame-size
+               'skip-frame-setup skip-frame-setup)))
 
 (define/match (register-num r)
   [((list 'register n)) n])
@@ -1016,9 +1014,10 @@
 ;; - Generates function prologue, call and return sequences from
 ;;   prologue, labelcall, and return directives.
 ;;
-(define (gen-asm code sasm)
+(define (gen-asm code sasm alloc-info frame-info)
   (let*-values
-      ([(assignments intervals frame-info) (analyze-frame code sasm)]
+      ([(assignments) (car alloc-info)]
+       [(intervals)   (cadr alloc-info)]
        [(asm) empty]
        [(before) empty]
        [(after) empty]
@@ -1331,6 +1330,16 @@
 (define *code-source* (make-parameter #f))
 (define *code-elt* (make-parameter #f))
 
+(define (env-symbols var)
+  (let ([value (getenv var)])
+    (if value
+        (map string->symbol (string-split value))
+        empty)))
+
+(define *trace-compilation-of* (env-symbols "trace"))
+(define *trace-functions* (env-symbols "tracefun"))
+(define *trace-compilation* (make-parameter #f))
+
 (struct pass (name proc arg-keys))
 
 (define (pass-args pass env)
@@ -1338,9 +1347,12 @@
        (pass-arg-keys pass)))
 
 (define (run-pass pass env)
-  (dict-set env (pass-name pass)
-            (apply (pass-proc pass)
-                   (pass-args pass env))))
+  (let ([result (apply (pass-proc pass)
+                       (pass-args pass env))])
+    (when (*trace-compilation*)
+      (eprintf "~a:~n~a~n~n"
+               (pass-name pass) (pretty-format result)))
+    (dict-set env (pass-name pass) result)))
 
 (define compiler-passes
   (list (pass 'desugar
@@ -1349,15 +1361,27 @@
               gen-ir '(desugar label name))
         (pass 'ir1a
               label-cleanup '(ir1))
+        (pass 'register-alloc
+              linear-scan-alloc '(ir1a))
+        (pass 'frame-info
+              analyze-frame '(code ir1a register-alloc))
         (pass 'asm
-              gen-asm '(code ir1a))
+              gen-asm '(code ir1a register-alloc frame-info))
         (pass 'asm-vec
               list->vector '(asm))
         (pass 'store
               set-proc-asm! '(proc asm-vec))))
 
 (define (compile-fun cproc)
-  (parameterize ([*code-elt* (proc-name cproc)])
+  (parameterize ([*code-elt* (proc-name cproc)]
+                 [*trace-compilation* (memq (proc-name cproc)
+                                            *trace-compilation-of*)])
+    (when (*trace-compilation*)
+      (eprintf "==== Compiling ~a ====~n~n" (proc-name cproc))
+      (eprintf "code:~n~a~n~n" (pretty-format (proc-code cproc)))
+      ;; (unless (empty? *trace-functions*)
+      ;;   (eval (list* 'trace *trace-functions*)))
+      )
     (for/fold ([comp-env (list (cons 'code (proc-code cproc))
                                (cons 'label (proc-label cproc))
                                (cons 'name (proc-name cproc))
@@ -1377,7 +1401,12 @@
                 (eprintf "~a: ~a~n"
                          key (pretty-format arg)))
               (raise exn))])
-        (run-pass pass comp-env)))))
+        (run-pass pass comp-env)))
+    (when (*trace-compilation*)
+      #f)
+    ;;            (not (empty? *trace-functions*)))
+    ;;   (eval (list* 'untrace *trace-functions*)))
+    ))
 
 (define (compile-code prog origin (compile-toplevel #f))
   (parameterize ([*code-source* origin])
