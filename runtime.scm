@@ -21,3 +21,10 @@
 
 (define (pair? v)
   (if (%tagged? %type-tag-mask %cons-tag v) #t #f))
+
+(define (integer? v)
+  (if (%tagged? %tagged-mask %tagged-tag v) #f #t))
+
+(define (number? v)
+  ;; synonymous with integer? for now...
+  (if (%tagged? %tagged-mask %tagged-tag v) #f #t))
