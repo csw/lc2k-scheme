@@ -101,6 +101,8 @@
 (define empty-list-v empty-tag)
 (define pointer-mask #x0000FFFF)
 (define cons-tag     (pointer-type-tag #b0000))
+(define proc-tag     (pointer-type-tag #b0100))
+(define constant-bit (expt 2 24))
 
 (define (tag-bits v)
   (bitwise-and v type-tag-mask))
@@ -336,7 +338,9 @@
                                            "  ")))))
 
 
-(struct proc (name num label addr-label ptr-label code))
+(struct proc (name num label addr-label ptr-label code
+                   [asm #:mutable #:auto] [address #:mutable #:auto])
+        #:transparent)
 
 (define (make-proc name expr)
   (let ([num (next-lambda)])
@@ -346,6 +350,9 @@
           (prefix-label #\A num)
           (prefix-label #\P num)
           expr)))
+
+(define (proc-pointer proc)
+  (bitwise-ior proc-tag constant-bit (proc-address proc)))
 
 (define *asm-functions*
   `((cons . ,(proc 'cons -1 "Lcons" "Acons" "Pcons" #f))
@@ -1200,7 +1207,7 @@
         [(list 'proc-call dest-var proc-var args ...)
          (let* ([target-reg spill-s2-reg]
                 [proc-reg (subst-src proc-var pos target-reg)])
-           (emit! 'lw   0 spill-s1-reg pointer-mask
+           (emit! 'lw   0 spill-s1-reg (const-ref pointer-mask)
                   "; load pointer mask")
            (emit! 'nand spill-s1-reg proc-reg target-reg)
            (emit! 'nand target-reg target-reg target-reg)
@@ -1265,7 +1272,7 @@
     (reverse asm)))
 
 
-(define *runtime-text*
+(define runtime-preamble
   '("        lw   0 5 entry"
     "        lw   0 7 stack"
     "        jalr 5 6"
@@ -1325,14 +1332,17 @@
               label-cleanup '(ir1))
         (pass 'asm
               gen-asm '(code ir1a))
-        (pass 'output
-              (curry for-each displayln) '(asm))))
+        (pass 'asm-vec
+              list->vector '(asm))
+        (pass 'store
+              set-proc-asm! '(proc asm-vec))))
 
 (define (compile-fun cproc)
   (parameterize ([*code-elt* (proc-name cproc)])
     (for/fold ([comp-env (list (cons 'code (proc-code cproc))
                                (cons 'label (proc-label cproc))
-                               (cons 'name (proc-name cproc)))])
+                               (cons 'name (proc-name cproc))
+                               (cons 'proc cproc))])
         ([pass compiler-passes])
       (with-handlers
           ([exn:fail?
@@ -1356,16 +1366,19 @@
       [(list 'labels
              (list (list lvars lexprs) ...)
              top-expr)
-       (for ([lvar lvars]
-             [lexpr lexprs])
-         (let ([lproc (make-proc lvar lexpr)])
-           (env-define (global-env) lvar lproc)
-           (compile-fun lproc)))
-       (when compile-toplevel
-         (let* ([code `(code () ,top-expr)]
-                [tproc (make-proc "<toplevel>" code)])
-           (compile-fun tproc)
-           tproc))])))
+       (let ([procs
+              (for/list ([lvar lvars]
+                    [lexpr lexprs])
+                (let ([lproc (make-proc lvar lexpr)])
+                  (env-define (global-env) lvar lproc)
+                  (compile-fun lproc)
+                  lproc))])
+         (if compile-toplevel
+             (let* ([code `(code () ,top-expr)]
+                    [tproc (make-proc "<toplevel>" code)])
+               (compile-fun tproc)
+               (cons tproc procs))
+             procs))])))
 
 (define *scheme-runtime-file* "runtime.scm")
 
@@ -1377,23 +1390,39 @@
                   (lambda (t)
                     (displayln t (current-error-port)))])
     (init-global-env)
-    ;; write the raw asm runtime directly
-    (for-each displayln *runtime-text*)
-    ;; compile the Scheme runtime
-    (compile-code (load-code *scheme-runtime-file*)
-                  *scheme-runtime-file*)
-    ;; compile the user code
-    (let ([entry-proc (compile-code prog 'user #t)])
+    ;; compile all the code
+    (let* ([runtime-procs
+            (compile-code (load-code *scheme-runtime-file*)
+                          *scheme-runtime-file*)]
+           [user-procs (compile-code prog 'user #t)]
+           [entry-proc (car user-procs)]
+           [all-procs (append runtime-procs (reverse user-procs))])
+      ;; write the raw asm runtime directly
+      (for-each displayln runtime-preamble)
+      ;; write the procedure bodies
+      (for/fold ([address (length runtime-preamble)])
+          ([proc all-procs])
+        ;; track the address of each proc
+        ;; (allowing for the leading noop)
+        (set-proc-address! proc (add1 address))
+        ;; and write it out
+        (for ([line (proc-asm proc)])
+          (displayln line))
+        (+ address (vector-length (proc-asm proc))))
       ;; and now write the runtime support data
-      (for-each displayln (runtime-data (proc-label entry-proc))))
-    ;; and constant pool
-    (write-constant-defs)
-    ;; and now the function entry points
-    (for ([proc-entry (in-hash-values (env-dict (global-env)))]
-          #:when (proc? proc-entry))
-      (displayln (format "~a    .fill ~a"
-                         (proc-addr-label proc-entry)
-                         (proc-label proc-entry))))))
+      (for-each displayln (runtime-data (proc-label entry-proc)))
+      ;; and constant pool
+      (write-constant-defs)
+      ;; and now the function entry points
+      (for ([proc all-procs])
+        ;; raw address
+        (displayln (format "~a    .fill ~a"
+                           (proc-addr-label proc)
+                           (proc-label proc)))
+        ;; tagged pointer
+        (displayln (format "~a    .fill ~a"
+                           (proc-ptr-label proc)
+                           (proc-pointer proc)))))))
 
 ;; convert to our labels / code representation
 (define (transform-program prog)

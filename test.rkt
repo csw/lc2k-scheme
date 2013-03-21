@@ -120,6 +120,7 @@
     (test-case
      '(
        (define (use f)
-         (f 1 2))
+         ;; not in tail position
+         (+ (f 1 2) 9))
        (use +)))
     (displayln "All tests succeeded.")))
