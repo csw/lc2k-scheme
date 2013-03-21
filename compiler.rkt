@@ -198,13 +198,6 @@
                              ,(expand-prims mask)
                              ,(expand-prims v))
                    ,(expand-prims tag))]
-           [(list '%ptr v)          `(%and ,(expand-prims v) pointer-mask)]
-           ;;[(list '%car v)          `(%load (%ptr ,(expand-prims v)) 0)]
-           ;;[(list '%cdr v)          `(%load (%ptr ,(expand-prims v)) 1)]
-           ;;[(list 'zero? v)         `(%zero? ,(expand-prims v))]
-           ;; simple but unsafe versions of common functions
-           ;;[(list 'car v)           `(%car ,(expand-prims v))]
-           ;;[(list 'cdr v)           `(%cdr ,(expand-prims v))]
            [(list '= x y)           `(%eq? ,(expand-prims x)
                                            ,(expand-prims y))]
            [(list '+ x y)           `(%add ,(expand-prims x)
