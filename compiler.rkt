@@ -524,6 +524,7 @@
   (match-define (list 'code (list formals ...) body-exp)
                 code-exp)
   (let* ([env (make-env (global-env))]
+         [post-prologue (internal-label)]
          [insns empty]
          [n-temp 0])
     (define (emit! . args)
@@ -630,10 +631,22 @@
                            (emit! 'label next-label)
                            (set! next-label (internal-label)))))]
                   [dest-reg (or dd (alloc-temp))]
-                  [target (lambda-addr-label (cadr (env-lookup env sym)))])
-             ;; TODO: check for tail call
-             (apply emit! 'labelcall dest-reg target arg-temps)
-             dest-reg)]
+                  [target-entry (env-lookup env sym)]
+                  [target-label (cadr target-entry)]
+                  [target (lambda-addr-label target-label)])
+             ;; TODO: check for self tail call
+             (if (eq? cd 'return)
+                 (begin
+                   (apply emit!
+                          'tail-call
+                          (if (equal? entry-label target-label)
+                              post-prologue
+                              target-entry)
+                          'return-addr arg-temps)
+                   'tail-call)
+                 (begin
+                   (apply emit! 'labelcall dest-reg target arg-temps)
+                   dest-reg)))]
           ;; conditional
           [(list 'if if-pred if-then if-else)
            (let* ([true-label (internal-label)]
@@ -657,6 +670,8 @@
       (let ([result (gen-code)])
         (cond
          [(tagged-list? 'if exp) #f]
+         ;; generated a tail call
+         [(eq? result 'tail-call) #f]
          ;; expression in tail position, return
          [(eq? cd 'return)
           (emit! 'return result 'return-addr)]
@@ -674,6 +689,7 @@
     ;; function entry point
     (emit! 'label entry-label)
     (emit! 'prologue)
+    (emit! 'label post-prologue)
     (emit! 'bind 'return-addr 6 '(frame 0))
     (for ([formal formals]
           [reg (in-range 1 4)])
@@ -692,7 +708,7 @@
             [(lw) (third stmt)]
             [(labelcall) (second stmt)]
             [(bind) (second stmt)]
-            [(sw beq noop label prologue return) #f]
+            [(sw beq noop label prologue return tail-call) #f]
             [else (error "unhandled tag: " tag)])])
     (if (or (eq? dest 0) (equal? dest '(register 0)))
         #f
@@ -706,6 +722,7 @@
                [(lw) (list (second stmt))]
                [(sw) (list (second stmt) (third stmt))]
                [(labelcall) (cdddr stmt)]
+               [(tail-call) (cddr stmt)]
                [(beq) (list (second stmt) (third stmt))]
                [(return) (list (second stmt) (third stmt))]
                [(noop label bind prologue) empty]
@@ -822,8 +839,7 @@
               (set! assignments
                     (dict-set assignments
                               (interval-var i)
-                              (assign-location (interval-var i)
-                                               (interval-start i))))))))
+                              (assign-location (interval-var i))))))))
     (for ([i intervals])
       (let ([stmt (interval-stmt i)])
         (match stmt
@@ -903,7 +919,9 @@
 (define (analyze-frame code sasm)
   (let*-values ([(assignments intervals frame-info)
                  (linear-scan-alloc sasm)]
-                [(is-leaf) (not (findf (curry tagged-list? 'labelcall)
+                [(is-leaf) (not (findf (lambda (stmt)
+                                         (or (tagged-list? 'labelcall stmt)
+                                             (tagged-list? 'tail-call stmt)))
                                        sasm))]
                 [(num-formals) (length (code-formals code))]
                 [(stack-formals) (max 0 (- num-formals 3))]
@@ -986,6 +1004,9 @@
                      ;; branch to internal label
                      [(list 'beq a b (? internal-label? target))
                       (values #f int-labels (set-add labels-used target))]
+                     ;; self-tail-call
+                     [(list 'tail-call (? string? target) _ ...)
+                      (values #f int-labels (set-add labels-used target))]
                      ;; non-code-generating directive
                      [(list 'bind args ...)
                       (values cur-label int-labels labels-used)]
@@ -1010,7 +1031,7 @@
 ;; - Generates function prologue, call and return sequences from
 ;;   prologue, labelcall, and return directives.
 ;;
-(define (gen-asm code sasm)
+(define (gen-asm code sasm fun-label)
   (let*-values
       ([(assignments intervals frame-info) (analyze-frame code sasm)]
        [(asm) empty]
@@ -1212,6 +1233,29 @@
            ;; otherwise we wanted the value in r1, and it's there now
            ;; restore live vars
            (restore-regs-for-call pos dest-var))]
+        ;; tail-call
+        [(list 'tail-call target ret-addr-ref args ...)
+         ;; marshal arguments into registers
+         ;; XXX: need to revisit for stack args
+         (marshal-args args pos)
+         ;; call for side effect, to ensure return addr is in its register
+         (subst-src ret-addr-ref pos ret-reg)
+         (if (string? target)
+             ;; self tail call
+             (emit! 'beq 0 0 target
+                    "; self-tail-call")
+             ;; tail call to something else
+             (let ([target-addr-label
+                    (lambda-addr-label (cadr target))]
+                   [frame-size (dict-ref frame-info 'frame-size)])
+               (unless (dict-ref frame-info 'skip-frame-setup)
+                 (emit! 'lw 0 spill-s1-reg (const-ref frame-size))
+                 (emit! 'add sp-reg spill-s1-reg sp-reg
+                        (format "; SP += ~a" frame-size)))
+               (emit! 'lw 0 spill-s1-reg target-addr-label
+                      "; load target address")
+               (emit! 'jalr spill-s1-reg spill-s2-reg
+                      (format "; tail-call ~a" target-addr-label))))]
         ;; return
         [(list 'return rv-ref addr-ref)
          (let ([rv-cur-reg (subst-src rv-ref pos rv-reg)]
@@ -1297,7 +1341,7 @@
         (pass 'ir1a
               label-cleanup '(ir1))
         (pass 'asm
-              gen-asm '(code ir1a))
+              gen-asm '(code ir1a label))
         (pass 'output
               (curry for-each displayln) '(asm))))
 
