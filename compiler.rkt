@@ -1440,3 +1440,7 @@
     (lambda ()
       (compile-program x))
     #:exists 'must-truncate))
+
+(define (compile-print-file path)
+  (compile-program (file->list path)))
+

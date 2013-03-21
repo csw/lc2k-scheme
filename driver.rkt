@@ -22,3 +22,7 @@
 
 (define (compile-ret x)
   (decode-immediate (string->number (compile-and-run x))))
+
+(define (run-file path)
+  (compile-ret (file->list path)))
+
