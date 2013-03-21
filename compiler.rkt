@@ -348,9 +348,9 @@
           expr)))
 
 (define *asm-functions*
-  '((cons . (proc 'cons "Lcons" "Acons"))
-    (car  . (proc 'car  "Lcar"  "Acar"))
-    (cdr  . (proc 'cdr  "Lcdr"  "Acdr"))))
+  `((cons . ,(proc 'cons -1 "Lcons" "Acons" "Pcons" #f))
+    (car  . ,(proc 'car  -1 "Lcar"  "Acar"  "Pcar"  #f))
+    (cdr  . ,(proc 'cdr  -1 "Lcdr"  "Acdr"  "Pcdr"  #f))))
 
 (define immed-constants
   `((empty           . ,empty-list-v)
@@ -604,11 +604,7 @@
                  (begin
                    (match target-entry
                      [(struct proc _)
-                      (apply emit!
-                             'labelcall
-                             dest-reg
-                             (proc-addr-label target-entry)
-                             arg-temps)]
+                      (apply emit! 'labelcall dest-reg target-entry arg-temps)]
                      [(list 'local var-name)
                       (apply emit! 'proc-call dest-reg target-entry arg-temps)])
                    dest-reg)))]
@@ -1184,14 +1180,15 @@
                     (car comment)
                     ""))]
         ;; labelcall
-        [(list 'labelcall dest-var label args ...)
+        [(list 'labelcall dest-var (? proc? call-proc) args ...)
          (let ([target-reg spill-s2-reg])
            (save-regs-for-call pos dest-var)
            ;; marshal first 3 args into registers
            (marshal-args args pos)
-           (emit! 'lw 0 target-reg label
-                  "; load target address")
-           (emit! 'jalr target-reg ret-reg (format "; call ~a" label))
+           (emit! 'lw 0 target-reg (proc-addr-label call-proc)
+                  (format "; load address of ~a" (proc-name call-proc)))
+           (emit! 'jalr target-reg ret-reg
+                  (format "; call ~a" (proc-name call-proc)))
            (match (dict-ref assignments dest-var)
              [(list 'register 1) #t]
              [(list 'register n) (emit! 'add 0 1 n "; store result")]
