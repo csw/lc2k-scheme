@@ -213,6 +213,8 @@
   (match exp
     [(list (? prim-predicate? pred) args ...)
      (list* 'primcall pred (map expand-prims args))]
+    [(list 'zero? v)
+     (list 'primcall '%zero? (expand-prims v))]
     [(list 'empty? v)
      (list 'primcall '%eq? (expand-prims v) empty)]
     ;; and, or
