@@ -55,29 +55,53 @@
 ;;   vectors
 ;;   symbols
 ;;   strings
+;;
+;; bits 31-30: 01 for tagged Scheme types, otherwise fixnum
+;; bit  29:    pointer (1) or immediate (0)
+;; bits 28-25: type tag for immediate or pointer
+;;
+;; immediate type tags (29-25):
+;; 00000 char
+;; 00001 bool
+;; 00010 empty
+;;
+;; pointer type tags (29-25)
+;; 10000 cons
+;; 10001 vector
+;; 10010 string
+;; 10011 symbol
+;; 10100 closure
+;;
+;; For pointers:
+;;   bit 24: constant pointer
+
+(define (type-tag bits)
+  (bitwise-ior tagged-tag
+               (arithmetic-shift bits tag-shift)))
+
+(define (immed-type-tag bits)
+  (type-tag bits))
+
+(define (pointer-type-tag bits)
+  (type-tag (bitwise-ior (expt 2 5) bits)))
+
 
 (define tagged-mask  #b11000000000000000000000000000000)
 (define tagged-tag   #b01000000000000000000000000000000)
-(define tag-mask     #xFF000000)
-(define no-tag-mask  (bitwise-not tag-mask))
-(define tag-shift    24)
-(define tag-end      32)
-(define untag-shift  -24)
-(define char-shift   8)
-(define char-tag     (arithmetic-shift #b01001111 tag-shift))
-(define bool-tag     (arithmetic-shift #b01011111 tag-shift))
+(define type-tag-mask #xFE000000)
+(define no-type-tag-mask (bitwise-not type-tag-mask))
+(define tag-shift    25)
+(define char-tag     (immed-type-tag #b0000))
+(define bool-tag     (immed-type-tag #b0001))
 (define true-v       (add1 bool-tag))
 (define false-v      bool-tag)
-(define empty-tag    #b01101111)
-(define empty-list-v (arithmetic-shift empty-tag tag-shift))
+(define empty-tag    (immed-type-tag #b0010))
+(define empty-list-v empty-tag)
 (define pointer-mask #x0000FFFF)
-(define cons-tag     (arithmetic-shift #b01000111 tag-shift))
-
-(define (tag-bits-old v)
-  (bitwise-bit-field v tag-shift tag-end))
+(define cons-tag     (pointer-type-tag #b0000))
 
 (define (tag-bits v)
-  (bitwise-and v tag-mask))
+  (bitwise-and v type-tag-mask))
 
 (define (decode-immediate v)
   (if (= tagged-tag
@@ -87,7 +111,7 @@
          [(= v true-v) #t]
          [(= v false-v) #f]
          [(= v empty-list-v) empty]
-         [(= tag char-tag) (integer->char (bitwise-and v no-tag-mask))]
+         [(= tag char-tag) (integer->char (bitwise-and v no-type-tag-mask))]
          [else (raise-argument-error 'decode-immediate "immediate" v)]))
       ;; fixnum
       v))
@@ -324,14 +348,14 @@
     (cdr  . "Lcdr")))
 
 (define immed-constants
-  `((empty . ,empty-list-v)
-    (#t . ,true-v)
-    (#f . ,false-v)
-    (%tagged-mask . ,tagged-mask)
-    (%tagged-tag  . ,tagged-tag)
-    (%tag-mask . ,tag-mask)
-    (%char-tag . ,char-tag)
-    (%bool-tag . ,bool-tag)))
+  `((empty          . ,empty-list-v)
+    (#t             . ,true-v)
+    (#f             . ,false-v)
+    (%tagged-mask   . ,tagged-mask)
+    (%tagged-tag    . ,tagged-tag)
+    (%type-tag-mask . ,type-tag-mask)
+    (%char-tag      . ,char-tag)
+    (%bool-tag      . ,bool-tag)))
 
 (define (init-global-env)
   (set! num-environments 0)
