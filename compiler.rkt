@@ -70,7 +70,9 @@
 ;; 10001 vector
 ;; 10010 string
 ;; 10011 symbol
-;; 10100 closure
+;; 10100 procedure
+;; 10101 closure
+;; 10110 display (internal type)
 ;;
 ;; For pointers:
 ;;   bit 24: constant pointer
@@ -222,7 +224,7 @@
 
 (define (expand-call exp)
   (or (expand-primcall exp)
-      (cons 'labelcall
+      (cons 'call
             (cons (car exp)
                   (map expand-prims (cdr exp))))))
 
@@ -275,6 +277,12 @@
     (set! environments (dict-set environments env-id e))
     e))
 
+;; environment entry values:
+;;
+;; ('immediate val):   immediate constant
+;; ('local     name):  local variable
+;; <proc>: procedure 
+
 (define (env-define env k v)
   (dict-set! (env-dict env) k v))
 
@@ -291,13 +299,13 @@
 
 (define lambda-n 0)
 
-(define (lambda-label)
+(define (next-lambda)
   (begin0
-      (format "L~a" lambda-n)
+      lambda-n
     (set! lambda-n (add1 lambda-n))))
 
-(define (lambda-addr-label l)
-  (string-append "A" (substring l 1)))
+(define (prefix-label p n)
+  (format "~a~a" p n))
 
 (define internal-n 0)
 
@@ -327,10 +335,22 @@
                                                  (~a imm))
                                            "  ")))))
 
+
+(struct proc (name num label addr-label ptr-label code))
+
+(define (make-proc name expr)
+  (let ([num (next-lambda)])
+    (proc name
+          num
+          (prefix-label #\L num)
+          (prefix-label #\A num)
+          (prefix-label #\P num)
+          expr)))
+
 (define *asm-functions*
-  '((cons . "Lcons")
-    (car  . "Lcar")
-    (cdr  . "Lcdr")))
+  '((cons . (proc 'cons "Lcons" "Acons"))
+    (car  . (proc 'car  "Lcar"  "Acar"))
+    (cdr  . (proc 'cdr  "Lcdr"  "Acdr"))))
 
 (define immed-constants
   `((empty           . ,empty-list-v)
@@ -361,7 +381,7 @@
   (for ([fdef *asm-functions*])
     (env-define (global-env)
                 (car fdef)
-                (list 'fun-label (cdr fdef)))))
+                (cdr fdef))))
 (init-global-env)
 
 (define (reg-ref n)
@@ -523,7 +543,13 @@
                   reg)]
                ;; register variable (formal param)
                [(list 'local name)
-                referent]))]
+                referent]
+               ;; procedure; take a pointer to it
+               [(struct proc _)
+                (let* ([reg (or dd (alloc-temp))])
+                  (emit! 'lw 0 reg (proc-ptr-label referent)
+                         (format "; ~a = &~a" reg (proc-name referent)))
+                  reg)]))]
           ;; unary primitive
           [(list 'primcall prim arg)
            (let* ([op-label (internal-label)]
@@ -548,7 +574,7 @@
                        (emit! 'nand dest dest dest)])
              dest)]
           ;; function call
-          [(list 'labelcall sym args ...)
+          [(list 'call (? symbol? sym) args ...)
            ;; marshal arguments
            (let* ([next-label (internal-label)]
                   [arg-temps
@@ -561,20 +587,30 @@
                            (set! next-label (internal-label)))))]
                   [dest-reg (or dd (alloc-temp))]
                   [target-entry (env-lookup env sym)]
-                  [target-label (cadr target-entry)]
-                  [target (lambda-addr-label target-label)])
-             ;; TODO: check for self tail call
+                  [target-label (and (proc? target-entry)
+                                     (proc-label target-entry))])
              (if (eq? cd 'return)
                  (begin
                    (apply emit!
                           'tail-call
-                          (if (equal? entry-label target-label)
+                          (if (and target-label
+                                   (equal? entry-label target-label))
+                              ;; self tail call, skip epilogue and prologue
                               post-prologue
+                              ;; tail call elsewhere
                               target-entry)
                           'return-addr arg-temps)
                    'tail-call)
                  (begin
-                   (apply emit! 'labelcall dest-reg target arg-temps)
+                   (match target-entry
+                     [(struct proc _)
+                      (apply emit!
+                             'labelcall
+                             dest-reg
+                             (proc-addr-label target-entry)
+                             arg-temps)]
+                     [(list 'local var-name)
+                      (apply emit! 'proc-call dest-reg target-entry arg-temps)])
                    dest-reg)))]
           ;; conditional
           [(list 'if if-pred if-then if-else)
@@ -635,7 +671,7 @@
           (case tag
             [(add nand) (fourth stmt)]
             [(lw) (third stmt)]
-            [(labelcall) (second stmt)]
+            [(labelcall proc-call) (second stmt)]
             [(bind) (second stmt)]
             [(sw beq noop label prologue return tail-call) #f]
             [else (error "unhandled tag: " tag)])])
@@ -651,7 +687,7 @@
                [(lw) (list (second stmt))]
                [(sw) (list (second stmt) (third stmt))]
                [(labelcall) (cdddr stmt)]
-               [(tail-call) (cddr stmt)]
+               [(proc-call tail-call) (cddr stmt)]
                [(beq) (list (second stmt) (third stmt))]
                [(return) (list (second stmt) (third stmt))]
                [(noop label bind prologue) empty]
@@ -850,7 +886,8 @@
                  (linear-scan-alloc sasm)]
                 [(is-leaf) (not (findf (lambda (stmt)
                                          (or (tagged-list? 'labelcall stmt)
-                                             (tagged-list? 'tail-call stmt)))
+                                             (tagged-list? 'tail-call stmt)
+                                             (tagged-list? 'proc-call stmt)))
                                        sasm))]
                 [(num-formals) (length (code-formals code))]
                 [(stack-formals) (max 0 (- num-formals 3))]
@@ -960,7 +997,7 @@
 ;; - Generates function prologue, call and return sequences from
 ;;   prologue, labelcall, and return directives.
 ;;
-(define (gen-asm code sasm fun-label)
+(define (gen-asm code sasm)
   (let*-values
       ([(assignments intervals frame-info) (analyze-frame code sasm)]
        [(asm) empty]
@@ -1162,6 +1199,25 @@
            ;; otherwise we wanted the value in r1, and it's there now
            ;; restore live vars
            (restore-regs-for-call pos dest-var))]
+        ;; proc-call
+        [(list 'proc-call dest-var proc-var args ...)
+         (let* ([target-reg spill-s2-reg]
+                [proc-reg (subst-src proc-var pos target-reg)])
+           (emit! 'lw   0 spill-s1-reg pointer-mask
+                  "; load pointer mask")
+           (emit! 'nand spill-s1-reg proc-reg target-reg)
+           (emit! 'nand target-reg target-reg target-reg)
+           (save-regs-for-call pos dest-var)
+           ;; marshal first 3 args into registers
+           (marshal-args args pos)
+           (emit! 'jalr target-reg ret-reg (format "; call ~a" proc-var))
+           (match (dict-ref assignments dest-var)
+             [(list 'register 1) #t]
+             [(list 'register n) (emit! 'add 0 1 n "; store result")]
+             [(? list? stack-loc) (emit-line (store-spilled 1 stack-loc))])
+           ;; otherwise we wanted the value in r1, and it's there now
+           ;; restore live vars
+           (restore-regs-for-call pos dest-var))]
         ;; tail-call
         [(list 'tail-call target ret-addr-ref args ...)
          ;; marshal arguments into registers
@@ -1169,22 +1225,23 @@
          (marshal-args args pos)
          ;; call for side effect, to ensure return addr is in its register
          (subst-src ret-addr-ref pos ret-reg)
-         (if (string? target)
-             ;; self tail call
-             (emit! 'beq 0 0 target
-                    "; self-tail-call")
-             ;; tail call to something else
-             (let ([target-addr-label
-                    (lambda-addr-label (cadr target))]
-                   [frame-size (dict-ref frame-info 'frame-size)])
-               (unless (dict-ref frame-info 'skip-frame-setup)
-                 (emit! 'lw 0 spill-s1-reg (const-ref frame-size))
-                 (emit! 'add sp-reg spill-s1-reg sp-reg
-                        (format "; SP += ~a" frame-size)))
-               (emit! 'lw 0 spill-s1-reg target-addr-label
-                      "; load target address")
-               (emit! 'jalr spill-s1-reg spill-s2-reg
-                      (format "; tail-call ~a" target-addr-label))))]
+         (match target
+           ;; self tail call
+           [(? string?)
+            (emit! 'beq 0 0 target
+                   "; self-tail-call")]
+           ;; tail call by label
+           [(struct proc _)
+            (let ([target-addr-label (proc-addr-label target)]
+                  [frame-size (dict-ref frame-info 'frame-size)])
+              (unless (dict-ref frame-info 'skip-frame-setup)
+                (emit! 'lw 0 spill-s1-reg (const-ref frame-size))
+                (emit! 'add sp-reg spill-s1-reg sp-reg
+                       (format "; SP += ~a" frame-size)))
+              (emit! 'lw 0 spill-s1-reg target-addr-label
+                     "; load target address")
+              (emit! 'jalr spill-s1-reg spill-s2-reg
+                     (format "; tail-call ~a" target-addr-label)))])]
         ;; return
         [(list 'return rv-ref addr-ref)
          (let ([rv-cur-reg (subst-src rv-ref pos rv-reg)]
@@ -1270,22 +1327,22 @@
         (pass 'ir1a
               label-cleanup '(ir1))
         (pass 'asm
-              gen-asm '(code ir1a label))
+              gen-asm '(code ir1a))
         (pass 'output
               (curry for-each displayln) '(asm))))
 
-(define (compile-fun code label name)
-  (parameterize ([*code-elt* name])
-    (for/fold ([comp-env (list (cons 'code code)
-                               (cons 'label label)
-                               (cons 'name name))])
+(define (compile-fun cproc)
+  (parameterize ([*code-elt* (proc-name cproc)])
+    (for/fold ([comp-env (list (cons 'code (proc-code cproc))
+                               (cons 'label (proc-label cproc))
+                               (cons 'name (proc-name cproc)))])
         ([pass compiler-passes])
       (with-handlers
           ([exn:fail?
             (lambda (exn)
               (eprintf "Error compiling ~a (from ~a)!~n"
                        (*code-elt*) (*code-source*))
-              (pretty-print code (current-error-port))
+              (pretty-print (proc-code cproc) (current-error-port))
               (eprintf "Error in pass ~a (~v), with args:~n"
                        (pass-name pass)
                        (pass-proc pass))
@@ -1304,13 +1361,14 @@
              top-expr)
        (for ([lvar lvars]
              [lexpr lexprs])
-         (let ([label (lambda-label)])
-           (env-define (global-env) lvar (list 'fun-label label))
-           (compile-fun lexpr label lvar)))
+         (let ([lproc (make-proc lvar lexpr)])
+           (env-define (global-env) lvar lproc)
+           (compile-fun lproc)))
        (when compile-toplevel
-         (let ([top-label (lambda-label)])
-           (compile-fun `(code () ,top-expr) top-label "<toplevel>")         
-           top-label))])))
+         (let* ([code `(code () ,top-expr)]
+                [tproc (make-proc "<toplevel>" code)])
+           (compile-fun tproc)
+           tproc))])))
 
 (define *scheme-runtime-file* "runtime.scm")
 
@@ -1328,18 +1386,17 @@
     (compile-code (load-code *scheme-runtime-file*)
                   *scheme-runtime-file*)
     ;; compile the user code
-    (let ([entry-label (compile-code prog 'user #t)])
+    (let ([entry-proc (compile-code prog 'user #t)])
       ;; and now write the runtime support data
-      (for-each displayln (runtime-data entry-label)))
+      (for-each displayln (runtime-data (proc-label entry-proc))))
     ;; and constant pool
     (write-constant-defs)
     ;; and now the function entry points
-    (for ([label-entry (in-hash-values (env-dict (global-env)))]
-          #:when (tagged-list? 'fun-label label-entry))
-      (let ([label-name (cadr label-entry)])
-        (displayln (format "~a    .fill ~a"
-                           (lambda-addr-label label-name)
-                           label-name))))))
+    (for ([proc-entry (in-hash-values (env-dict (global-env)))]
+          #:when (proc? proc-entry))
+      (displayln (format "~a    .fill ~a"
+                         (proc-addr-label proc-entry)
+                         (proc-label proc-entry))))))
 
 ;; convert to our labels / code representation
 (define (transform-program prog)

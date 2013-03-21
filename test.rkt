@@ -116,4 +116,10 @@
             0)
        )
      15)
+    (test-section "First-class procedures")
+    (test-case
+     '(
+       (define (use f)
+         (f 1 2))
+       (use +)))
     (displayln "All tests succeeded.")))

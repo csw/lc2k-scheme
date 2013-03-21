@@ -19,6 +19,9 @@
 (define (odd? v)
   (not (zero? (bitwise-and v 1))))
 
+(define (+ x y)
+  (+ x y))
+
 (define (boolean? v)
   (if (%tagged? %type-tag-mask %bool-tag v) #t #f))
 
