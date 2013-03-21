@@ -354,10 +354,38 @@
 (define (proc-pointer proc)
   (bitwise-ior proc-tag constant-bit (proc-address proc)))
 
-(define *asm-functions*
-  `((cons . ,(proc 'cons -1 "Lcons" "Acons" "Pcons" #f))
-    (car  . ,(proc 'car  -1 "Lcar"  "Acar"  "Pcar"  #f))
-    (cdr  . ,(proc 'cdr  -1 "Lcdr"  "Acdr"  "Pcdr"  #f))))
+(define asm-procs
+  (list (proc 'cons -1 "Lcons" "Acons" "Pcons" #f)
+        (proc 'car  -1 "Lcar"  "Acar"  "Pcar"  #f)
+        (proc 'cdr  -1 "Lcdr"  "Acdr"  "Pcdr"  #f)))
+
+(define asm-proc-asm
+  (list (cons 'cons
+              #(    "        noop"
+                    "Lcons   lw   0 5 heap"
+                    "        lw   0 4 consS"
+                    "        add  4 5 4"
+                    "        sw   0 4 heap"
+                    "        sw   4 1 0"
+                    "        sw   4 2 1"
+                    "        lw   0 5 ctag"
+                    "        add  4 5 1"
+                    "        jalr 6 5"))
+        (cons 'car
+              #(    "        noop"
+                    "Lcar    lw   0 5 pmask"
+                    "        nand 1 5 1"
+                    "        nand 1 1 1"
+                    "        lw   1 1 0"
+                    "        jalr 6 5"
+                    "        noop"))
+        (cons 'cdr
+              #("        noop"
+                "Lcdr    lw   0 5 pmask"
+                "        nand 1 5 1"
+                "        nand 1 1 1"
+                "        lw   1 1 1"
+                "        jalr 6 5"))))
 
 (define immed-constants
   `((empty           . ,empty-list-v)
@@ -385,10 +413,9 @@
     (env-define (global-env)
                 (car def)
                 (list 'immediate (cdr def))))
-  (for ([fdef *asm-functions*])
-    (env-define (global-env)
-                (car fdef)
-                (cdr fdef))))
+  (for ([aproc asm-procs])
+    (env-define (global-env) (proc-name aproc) aproc)
+    (set-proc-asm! aproc (dict-ref asm-proc-asm (proc-name aproc)))))
 (init-global-env)
 
 (define (reg-ref n)
@@ -1277,27 +1304,7 @@
     "        lw   0 7 stack"
     "        jalr 5 6"
     "        sw   0 1 SCMrv"
-    "SCMh    halt"
-    "        noop"
-    "Lcons   lw   0 5 heap"
-    "        lw   0 4 consS"
-    "        add  4 5 4"
-    "        sw   0 4 heap"
-    "        sw   4 1 0"
-    "        sw   4 2 1"
-    "        lw   0 5 ctag"
-    "        add  4 5 1"
-    "        jalr 6 5"
-    "Lcar    lw   0 5 pmask"
-    "        nand 1 5 1"
-    "        nand 1 1 1"
-    "        lw   1 1 0"
-    "        jalr 6 5"
-    "Lcdr    lw   0 5 pmask"
-    "        nand 1 5 1"
-    "        nand 1 1 1"
-    "        lw   1 1 1"
-    "        jalr 6 5"))
+    "SCMh    halt"))
 
 (define (runtime-data entry-pt-label)
   (list "stack   .fill 65535"
@@ -1396,7 +1403,9 @@
                           *scheme-runtime-file*)]
            [user-procs (compile-code prog 'user #t)]
            [entry-proc (car user-procs)]
-           [all-procs (append runtime-procs (reverse user-procs))])
+           [all-procs (append asm-procs
+                              runtime-procs
+                              (reverse user-procs))])
       ;; write the raw asm runtime directly
       (for-each displayln runtime-preamble)
       ;; write the procedure bodies
