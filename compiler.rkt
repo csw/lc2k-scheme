@@ -193,7 +193,6 @@
 (define (expand-primcall exp)
   (let ([expanded
          (match exp
-           [(list 'empty? v)        `(%eq? ,(expand-prims v) empty)]
            [(list '%tagged? mask tag v)
             `(%eq? (primcall %band
                              ,(expand-prims mask)
@@ -238,6 +237,8 @@
   (match exp
     [(list (? prim-predicate? pred) args ...)
      (list* 'primcall pred (map expand-prims args))]
+    [(list 'empty? v)
+     (list 'primcall '%eq? (expand-prims v) empty)]
     ;; and, or
     [(list (and op (or 'and 'or)) args ...)
      (list* op (map expand-if-pred args))]

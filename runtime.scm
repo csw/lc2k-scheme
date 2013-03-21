@@ -12,3 +12,6 @@
 
 (define (eq? obj1 obj2)
   (if (%eq? obj1 obj2) #t #f))
+
+(define (empty? v)
+  (if (empty? v) #t #f))
