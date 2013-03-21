@@ -45,13 +45,13 @@
 ;;   fixnums, -2^31 to 2^30 - 1
 ;;   booleans: #t and #f
 ;;   chars
-;;   The empty list: empty
+;;   empty (the empty list)
 ;;
 ;; Pointer types:
 ;;   conses
+;;   procedures
 ;;
 ;; Unimplemented:
-;;   functions
 ;;   vectors
 ;;   symbols
 ;;   strings
@@ -86,7 +86,6 @@
 
 (define (pointer-type-tag bits)
   (type-tag (bitwise-ior (expt 2 5) bits)))
-
 
 (define tagged-mask  #b11000000000000000000000000000000)
 (define tagged-tag   #b01000000000000000000000000000000)
