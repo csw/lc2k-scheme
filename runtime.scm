@@ -15,3 +15,9 @@
 
 (define (empty? v)
   (if (empty? v) #t #f))
+
+(define (null? v)
+  (if (empty? v) #t #f))
+
+(define (pair? v)
+  (if (%tagged? %type-tag-mask %cons-tag v) #t #f))

@@ -356,7 +356,8 @@
     (%tagged-tag    . ,tagged-tag)
     (%type-tag-mask . ,type-tag-mask)
     (%char-tag      . ,char-tag)
-    (%bool-tag      . ,bool-tag)))
+    (%bool-tag      . ,bool-tag)
+    (%cons-tag      . ,cons-tag)))
 
 (define (init-global-env)
   (set! num-environments 0)
