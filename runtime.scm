@@ -44,3 +44,18 @@
   ;; synonymous with integer? for now...
   (if (%tagged? %tagged-mask %tagged-tag v) #f #t))
 
+;; (define (%multiply mcand mplier acc mask)
+;;   (if (= mask %max-fixnum-bit)
+;;       acc
+;;       (%multiply (+ mcand mcand)
+;;                  mplier
+;;                  (if (eq? (%nand mplier mask) %all-ones)
+;;                      acc
+;;                      (+ acc mcand))
+;;                  (+ mask mask))))
+
+;; (define (* mcand mplier)
+;;   (if (or (zero? mcand)
+;;           (zero? mplier))
+;;       0
+;;       (%multiply mcand mplier 0 1)))
