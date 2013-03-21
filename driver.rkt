@@ -2,17 +2,23 @@
 
 (provide run-lc2k compile-and-run compile-ret)
 
+(require racket/runtime-path)
 (require "compiler.rkt")
 
-(define *lc2k-path* (expand-user-path "~/Dropbox/school/370/code/p1"))
-;(define *assembler* (build-path *lc2k-path* "assemble"))
-;(define *simulator* (build-path *lc2k-path* "simulator"))
-(define *runner* (build-path *lc2k-path* "runner"))
+(define *lc2k-path* (or (getenv "LC2K")
+                        (expand-user-path "~/Dropbox/school/370/code/p1")))
+(define *assembler* (build-path *lc2k-path* (or (getenv "ASM")
+                                                "assemble")))
+(define *simulator* (build-path *lc2k-path* (or (getenv "SIM")
+                                                "simulator")))
+(define-runtime-path *runner* "runner")
 
 (define (run-lc2k prog result-loc)
   (let ([out (with-output-to-string
                (lambda ()
-                 (system* *runner* "-p" prog "-m" result-loc)))])
+                 (system* *runner*
+                          "-a" *assembler* "-s" *simulator*
+                          "-p" prog "-m" result-loc)))])
     (with-input-from-string out read-line)))
 
 (define (compile-and-run x)
@@ -26,3 +32,5 @@
 (define (run-file path)
   (compile-ret (file->list path)))
 
+(module+ main
+  (displayln (run-file (vector-ref (current-command-line-arguments) 0))))

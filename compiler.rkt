@@ -9,7 +9,8 @@
 (require racket/format)
 (require racket/trace)
 
-(provide compile-program compile-to *lc2k-rv* decode-immediate)
+(provide compile-program compile-to *lc2k-rv* decode-immediate
+         compile-print-file)
 
 ;; The LC2K has 8 registers, used as follows.
 ;; 
@@ -1474,3 +1475,5 @@
 (define (compile-print-file path)
   (compile-program (file->list path)))
 
+(module+ main
+  (compile-print-file (vector-ref (current-command-line-arguments) 0)))
