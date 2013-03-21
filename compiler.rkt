@@ -251,21 +251,12 @@
    [(? const?)      exp]
    [(? prim?)       exp]
    [(? ref?)        exp]
-   ;;((lambda? exp)     `(lambda ,(lambda->formals exp)
-   ;;                      ,(expand-prims (lambda->exp exp))))
-   ;((set!? exp)       `(set! ,(set!->var exp) ,(set!->exp exp)))
    [(? if?)         `(if ,(expand-if-pred (if->condition exp))
                            ,(expand-prims (if->then exp))
                            ,(expand-prims (if->else exp)))]
    [(list (and (or 'and 'or)
                op)
           args ..1)         `(,op ,@(map expand-prims args))]
-                                        ; Sugar:
-   ;;((let? exp)        (expand-prims (let=>lambda exp)))
-   ;;((letrec? exp)     (expand-prims (letrec=>lets+sets exp)))
-   ;;((begin? exp)      (expand-prims (begin=>let exp)))
-   
-                                        ; Applications:
    [(? app?)        (expand-call exp)]
    [else              (error "unknown exp: " exp)]))
 
@@ -372,70 +363,6 @@
                 (car fdef)
                 (list 'fun-label (cdr fdef)))))
 (init-global-env)
-
-
-;; ; allocate-environment : list[symbol] -> env-id
-;; (define (allocate-environment fields)
-;;   (let ((id num-environments))
-;;     (set! num-environments (+ 1 num-environments))
-;;     (set! environments (cons (env id fields) environments))
-;;     id))
-
-;; ; get-environment : natural -> list[symbol]
-;; (define (get-environment id)
-;;   (cdr (assv id environments)))
-
-
-(define num-temporaries 0)
-
-(define (make-temp)
-  (let ([t (list 'temp num-temporaries)])
-    (set! num-temporaries (+ 1 num-temporaries))
-    t))
-
-(define (move? l)
-  (tagged-list? 'move l))
-
-(define (temp? l)
-  (tagged-list? 'temp l))
-
-(define (lambda? l)
-  (tagged-list? 'lambda l))
-
-; lambda->formals : lambda-exp -> list[symbol]
-(define (lambda->formals exp)
-  (cadr exp))
-
-; lambda->exp : lambda-exp -> exp
-(define (lambda->exp exp)
-  (caddr exp))
-
-(define (move->temp m)
-  (findf temp? (cdr m)))
-
-(define (body->ir1 e acc)
-  (cons
-   (match e
-     [(? null?) (list 'return (move->temp (findf move? acc)))])
-   acc))
-
-(define (temp-for v)
-  (match v
-    [(? const?) (let ([t (make-temp)])
-                  (list (list 'move t (list 'const v))
-                        t))]))
-
-(define (add-after-if e rest)
-  (cond
-   [(empty? e) rest]
-   [(empty? rest) e]
-   [else (list rest e)]))
-
-(define (add-before-if e rest)
-  (cond
-   [(empty? e) rest]
-   [(empty? rest) e]
-   [else (cons e rest)]))
 
 (define (reg-ref n)
   (list 'register n))
