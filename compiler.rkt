@@ -668,7 +668,7 @@
           [reg (in-range 1 4)])
       (let ([var-ref (list 'local formal)])
         (env-define env formal var-ref)
-        (emit! 'bind var-ref reg (list 'frame reg))))
+        (emit! 'bind var-ref reg #f)))
     (let ([temp (alloc-temp)])
       (cg body-exp temp 'return #f))
     (reverse insns)))
@@ -767,12 +767,11 @@
                     (vector-ref stmts start))))
           < #:key interval-start)))
 
-(define (linear-scan-alloc code)
-  (let* ([intervals (linear-scan-build-intervals code)]
-         [active empty]
+(define (linear-scan-alloc code intervals)
+  (let* ([active empty]
          [free '(1 2 3 6)]
          [r (length free)]
-         [next-spill-loc 0]
+         [next-spill-loc 4]
          [locations empty]
          [assignments empty]
          [fixed-loc empty]
@@ -856,7 +855,7 @@
                (reverse live-at))
           (dict-set* empty
                      'fixed-loc fixed-loc
-                     'num-spill-locs next-spill-loc))))
+                     'spill-slots next-spill-loc))))
 
 (define (last-interval-for i intervals)
   (let ([succ (and (pair? (cdr intervals))
@@ -895,6 +894,12 @@
 ;;
 ;;   frame-info: alist dict
 
+(define reg-save-locations
+  '(((register 1) . (spill 0))
+    ((register 2) . (spill 1))
+    ((register 3) . (spill 2))
+    ((register 6) . (spill 3))))
+
 (define (analyze-frame code sasm alloc-info)
   (let*-values ([(assignments) (car alloc-info)]
                 [(intervals)   (cadr alloc-info)]
@@ -905,20 +910,9 @@
                                              (tagged-list? 'tail-call stmt)
                                              (tagged-list? 'proc-call stmt)))
                                        sasm))]
-                [(num-formals) (length (code-formals code))]
-                [(stack-formals) (max 0 (- num-formals 3))]
                 [(regs-used) (apply set (filter (curry tagged-list? 'register)
                                                 (dict-values assignments)))]
-                [(num-reg) (set-count regs-used)]
-                [(spill-locs) (dict-ref frame-info 'num-spill-locs)]
-                [(spill-size) (+ spill-locs num-reg)]
                 [(fixed-loc) (dict-ref frame-info 'fixed-loc)]
-                [(reg-save) (for/list ([reg-entry regs-used]
-                                       [loc (in-naturals spill-locs)])
-                              (match reg-entry
-                                [(list 'register reg)
-                                 (cons reg
-                                       (list 'spill loc))]))]
                 [(stack-assignments)
                  (for/list ([(var loc) (in-dict assignments)])
                    (let ([fixed (dict-ref fixed-loc var #f)])
@@ -928,13 +922,18 @@
                            [(list (or 'spill 'frame) n)
                             (cons var loc)]
                            [(list 'register n)
-                            (cons var (dict-ref reg-save n))]))))]
-                [(frame-size) (+ 1 stack-formals spill-size)]
+                            (cons var (dict-ref reg-save-locations loc))]))))]
+                [(frame-size) (+ 1 ; for return address
+                                 ;; note that this always includes 4
+                                 ;; for registers 1, 2, 3, 6
+                                 (dict-ref frame-info 'spill-slots))]
+                ;; conservative; might want to check for actual
+                ;; save/restore generation and work this out later
                 [(skip-frame-setup) (and is-leaf
-                                         (= num-reg (dict-count assignments)))])
+                                         (= (set-count regs-used)
+                                            (dict-count assignments)))])
     (dict-set* frame-info
                'is-leaf is-leaf
-               'spill-offset spill-size
                'stack-assignments stack-assignments
                'frame-size frame-size
                'skip-frame-setup skip-frame-setup)))
@@ -1036,8 +1035,8 @@
     (define (emit-after line)
       (set! after (cons line after)))
     (define/match (loc-stack-offset loc)
-      [((list 'frame n)) (- (dict-ref frame-info 'frame-size) n)]
-      [((list 'spill n)) (- (dict-ref frame-info 'spill-offset) n)])
+      [((list 'frame n)) (+ n (dict-ref frame-info 'frame-size))]
+      [((list 'spill n)) (- (dict-ref frame-info 'spill-slots) n)])
     (define (load-spilled reg loc (v #f) (reason "spilled"))
       (fmt-asm (list 'lw sp-reg reg (loc-stack-offset loc)
                      (format "; load ~a value ~a" reason v))))
@@ -1361,8 +1360,10 @@
               gen-ir '(desugar label name))
         (pass 'ir1a
               label-cleanup '(ir1))
+        (pass 'register-live-intervals
+              linear-scan-build-intervals '(ir1a))
         (pass 'register-alloc
-              linear-scan-alloc '(ir1a))
+              linear-scan-alloc '(ir1a register-live-intervals))
         (pass 'frame-info
               analyze-frame '(code ir1a register-alloc))
         (pass 'asm
