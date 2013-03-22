@@ -1,5 +1,7 @@
 #lang racket
 
+(require racket/trace)
+
 (require "types.rkt")
 (require "environ.rkt")
 (require "linear-scan.rkt")
@@ -140,14 +142,11 @@
         (unless (empty? ctx)
           (let* ([arg (car ctx)] ;; var
                  [loc (dict-ref assignments arg)]
-                 [reg (and (tagged-list? 'register loc)
-                           (register-num loc))]
                  [remain (cdr ctx)]
-                 [conflict (and reg ;; var in our destination register 
-                                (findf (lambda (a)
-                                         (equal? (dict-ref assignments a)
-                                                 (list 'register dest)))
-                                       remain))]
+                 [conflict (findf (lambda (a)
+                                    (equal? (dict-ref assignments a)
+                                            (list 'register dest)))
+                                  remain)]
                  [was-saved (member arg saved)] ;; were we saved out?
                  [use-loc (if was-saved
                               (dict-ref stack-assignments arg)
