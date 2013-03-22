@@ -33,8 +33,12 @@ It does *not* yet implement:
 
 - functions with more than 3 arguments (coming up next)
 - closures and lambda forms
+- quoted literals
 - `let`, `letrec`
 - `set!`
+- vectors
+- symbols
+- strings
 - error handling
 - type checks
 - multiplication
@@ -45,21 +49,23 @@ It does *not* yet implement:
 
 ## Simple compilation
 
-With the test file `test/fc1.scm`:
+With the test file [examples/fc1.scm](examples/fc1.scm):
 
-    (define (use f)
-      (f 1 2))
+```scheme
+(define (use f)
+  (f 1 2))
 
-    (use +)
+(use +)
+```
 
 We can compile this from the comment line with:
 
     $ racket -t compiler.rkt examples/fc-fun-1.scm > fc1.as
 
-This will write out LC2K assembly suitable for assembling and running
-on a simulator. When the machine halts, the result will be encoded as
-a Scheme value in register 1, and stored to the location labeled
-`SCMrv` in the assembly code.
+This will write out LC2K [assembly](examples/fc-fun-1.as) suitable for
+assembling and running on a simulator. When the machine halts, the
+result will be encoded as a Scheme value in register 1, and stored to
+the location labeled `SCMrv` in the assembly code.
 
 ## Running code
 
@@ -88,6 +94,24 @@ Now, use `driver.rkt`:
 
 Admittedly, the output isn't very exciting, but you can see from the
 source code that it's correct.
+
+# Examples
+
+For a slightly more interesting example, see
+[examples/sum-1.scm](examples/sum-1.scm):
+
+```scheme
+(define (sum l acc)
+  (if (empty? l)
+      acc
+      (sum (cdr l)
+           (+ (car l) acc))))
+
+(sum (cons 1 (cons 2 (cons 3 (cons 4 (cons 5 empty)))))
+     0)
+```
+
+And the corresponding [assembly code](examples/sum-1.scm).
 
 # Requirements
 
