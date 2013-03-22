@@ -171,6 +171,8 @@
     (when (*trace-compilation*)
       #f)))
 
+(define toplevel-proc-name '%toplevel)
+
 (define (compile-code prog origin (compile-toplevel #f))
   (parameterize ([*code-source* origin])
     (match prog
@@ -186,9 +188,9 @@
                   lproc))])
          (if compile-toplevel
              (let* ([code `(code () ,top-expr)]
-                    [tproc (make-proc '%toplevel code)])
+                    [tproc (make-proc toplevel-proc-name code)])
                (compile-fun tproc)
-               (cons tproc procs))
+               (append procs (list tproc)))
              procs))])))
 
 (define (load-code file)
@@ -204,10 +206,12 @@
             (compile-code (load-code *scheme-runtime-file*)
                           *scheme-runtime-file*)]
            [user-procs (compile-code prog 'user #t)]
-           [entry-proc (car user-procs)]
+           [entry-proc (findf (lambda (proc)
+                                (eq? (proc-name proc) toplevel-proc-name))
+                              user-procs)]
            [all-procs (append asm-procs
                               runtime-procs
-                              (reverse user-procs))])
+                              user-procs)])
       ;; write the raw asm runtime directly
       (for-each displayln runtime-preamble)
       ;; write the procedure bodies
@@ -242,7 +246,7 @@
   (with-output-to-file path
     (lambda ()
       (compile-program x))
-    #:exists 'must-truncate))
+    #:exists 'truncate))
 
 (define (compile-file-to prog-file out-path)
   (with-output-to-file out-path
