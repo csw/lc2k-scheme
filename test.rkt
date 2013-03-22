@@ -3,13 +3,21 @@
 (require "driver.rkt")
 (require "compiler.rkt")
 
+(provide run-tests)
+
+;; otherwise non-REPL usage of eval is totally broken
+(define ns (make-base-namespace))
+
+(parameterize ([current-namespace ns])
+  (namespace-require 'racket/list))
+
 (define (for-racket-eval code)
   (if (and (list? code) (list? (car code)))
       (cons 'begin code)
       code))
 
 (define (test-case code (expect #f))
-  (let* ([expected (or expect (eval (for-racket-eval code)))]
+  (let* ([expected (or expect (eval (for-racket-eval code) ns))]
          [result (compile-ret code)])
     (unless (equal? result expected)
       (raise-arguments-error 'test-case
@@ -130,3 +138,6 @@
          (f 1 2))
        (use +)))
     (displayln "All tests succeeded.")))
+
+(module+ main
+  (run-tests))
