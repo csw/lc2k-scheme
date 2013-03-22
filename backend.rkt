@@ -251,10 +251,13 @@
            (emit! 'lw 0 target-reg (proc-addr-label call-proc)
                   (format "; load address of ~a" (proc-name call-proc)))
            (emit! 'jalr target-reg ret-reg
-                  (format "; call ~a" (proc-name call-proc)))
+                  (format "        ; call ~a"
+                          (list* (proc-name call-proc) args)))
            (match (dict-ref assignments dest-var)
              [(list 'register 1) #t]
-             [(list 'register n) (emit! 'add 0 1 n "; move result")]
+             [(list 'register n) (emit! 'add 0 1 n
+                                        (format "; move result to ~a"
+                                                dest-var))]
              [(? list? stack-loc) (emit-line (store-spilled 1 stack-loc))]))]
         ;; proc-call
         [(list 'proc-call dest-var proc-var args ...)
@@ -267,10 +270,14 @@
            (save-regs-for-call pos dest-var)
            ;; marshal first 3 args into registers
            (marshal-args args pos)
-           (emit! 'jalr target-reg ret-reg (format "; call ~a" proc-var))
+           (emit! 'jalr target-reg ret-reg
+                  (format "        ; call ~a"
+                          (list* proc-var args)))
            (match (dict-ref assignments dest-var)
              [(list 'register 1) #t]
-             [(list 'register n) (emit! 'add 0 1 n "; move result")]
+             [(list 'register n) (emit! 'add 0 1 n
+                                        (format "; move result to ~a"
+                                                dest-var))]
              [(? list? stack-loc) (emit-line (store-spilled 1 stack-loc))]))]
         ;; tail-call
         [(list 'tail-call target ret-addr-ref args ...)
@@ -283,7 +290,8 @@
             ;; call for side effect, to ensure return addr is in its register
             (subst-src ret-addr-ref pos ret-reg)
             (emit! 'beq 0 0 target
-                   "; self-tail-call")]
+                   (format "; tail-call ~a"
+                           (list* "<self>" args)))]
            ;; tail call by label
            [(struct proc _)
             ;; marshal arguments into registers
@@ -299,7 +307,8 @@
               (emit! 'lw 0 spill-s1-reg target-addr-label
                      "; load target address")
               (emit! 'jalr spill-s1-reg spill-s2-reg
-                     (format "; tail-call ~a" (proc-name target))))]
+                     (format "; tail-call ~a"
+                             (list* (proc-name target) args))))]
            ;; tail call by pointer
            [(list 'local proc-var)
             (let* ([target-reg spill-s2-reg]
@@ -318,7 +327,7 @@
                 (emit! 'add sp-reg spill-s1-reg sp-reg
                        (format "; SP += ~a" frame-size)))
               (emit! 'jalr target-reg spill-s1-reg
-                     (format "; tail-call ~a" proc-var)))])]
+                     (format "; tail-call ~a" (list* proc-var args))))])]
         ;; return
         [(list 'return rv-ref addr-ref)
          (let ([rv-cur-reg (subst-src rv-ref pos rv-reg)]

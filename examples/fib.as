@@ -81,12 +81,12 @@ L3      lw      0       4       C2
         sw      7       6       5       ; store saved value return-addr
         add     0       3       1       ; marshal arg 1
         lw      0       5       A1      ; load address of zero?
-        jalr    5       6       ; call zero?
-        add     0       1       2       ; move result
+        jalr    5       6               ; call (zero? (temp 2))
+        add     0       1       2       ; move result to (temp 3)
         add     0       2       1       ; marshal arg 1
         lw      0       5       A0      ; load address of not
-        jalr    5       6       ; call not
-        add     0       1       3       ; move result
+        jalr    5       6               ; call (not (temp 3))
+        add     0       1       3       ; move result to (temp 4)
         lw      0       2       C0      ; (temp 5) = #f
         lw      7       6       5       ; load restored value return-addr
         beq     2       3       I21    
@@ -111,7 +111,7 @@ L4      lw      0       4       C2
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         lw      0       4       A1      ; load target address
-        jalr    4       5       ; tail-call zero?
+        jalr    4       5       ; tail-call (zero? (temp 2))
         noop    ; [odd?] '(code (v) (call not (call zero? (primcall %band v 1))))
 L5      lw      0       4       C2     
         add     7       4       7       ; SP -= 5
@@ -121,14 +121,14 @@ L5      lw      0       4       C2
         sw      7       6       5       ; store saved value return-addr
         add     0       3       1       ; marshal arg 1
         lw      0       5       A1      ; load address of zero?
-        jalr    5       6       ; call zero?
-        add     0       1       2       ; move result
+        jalr    5       6               ; call (zero? (temp 2))
+        add     0       1       2       ; move result to (temp 3)
         add     0       2       1       ; marshal arg 1
         lw      7       6       5       ; load restored value return-addr
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         lw      0       4       A0      ; load target address
-        jalr    4       5       ; tail-call not
+        jalr    4       5       ; tail-call (not (temp 3))
         noop    ; [+] '(code (x y) (primcall %add x y))
 L6      add     1       2       3      
         add     0       3       1       ; place return value
@@ -317,7 +317,7 @@ I99     sw      7       6       6       ; store spilled value return-addr
         add     0       3       2       ; marshal arg 2
         add     0       6       3       ; marshal arg 3
         lw      7       6       6       ; load spilled value return-addr
-        beq     0       0       I99     ; self-tail-call
+        beq     0       0       I99     ; tail-call (<self> (temp 2) (local b) (temp 3))
 I100    lw      7       1       1       ; load spilled value (local a)
         lw      7       5       6       ; load spilled value return-addr
         lw      0       4       C14    
@@ -331,7 +331,7 @@ L17     lw      0       4       C2
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         lw      0       4       A16     ; load target address
-        jalr    4       5       ; tail-call fib-aux
+        jalr    4       5       ; tail-call (fib-aux (local n) (temp 1) (temp 2))
         noop    ; [%toplevel] '(code () (call fib 21))
 L18     lw      0       4       C2     
         add     7       4       7       ; SP -= 5
@@ -339,7 +339,7 @@ L18     lw      0       4       C2
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         lw      0       4       A17     ; load target address
-        jalr    4       5       ; tail-call fib
+        jalr    4       5       ; tail-call (fib (temp 1))
 stack   .fill 65535
 heapS   .fill 8192
 heap    .fill 8192
