@@ -44,7 +44,7 @@
        [(before) empty]
        [(after) empty]
        [(stack-assignments) (dict-ref frame-info 'stack-assignments)]
-       [(lazy-load) empty]
+       [(to-lazy-load) empty]
        [(pending-label) no-label])
     (define (fmt-asm dir)
       (begin0 (string-join (map (lambda (v)
@@ -66,6 +66,21 @@
     (define (store-spilled reg loc (v #f) (reason "spilled"))
       (fmt-asm (list 'sw sp-reg reg (loc-stack-offset loc)
                      (format "; store ~a value ~a" reason v))))
+    (define (lazy-saved? reg-var)
+      (member reg-var to-lazy-load))
+    (define (lazy-load reg-var)
+      (unless (lazy-saved? reg-var)
+        (error 'lazy-load "~v not saved!" reg-var))
+      (set! to-lazy-load (remove reg-var to-lazy-load))
+      (load-spilled (register-num (dict-ref assignments reg-var))
+                    (dict-ref stack-assignments reg-var)
+                    reg-var
+                    "restored"))
+    (define (flush-lazy-load! pos)
+      (for ([var to-lazy-load])
+        (when (var-live-past? var pos)
+          (emit-line (lazy-load var))))
+      (set! to-lazy-load empty))
     (define (subst-dest d pos)
       (match d
         [(or (list 'temp _)
@@ -86,11 +101,13 @@
         [(or (list 'temp _)
              (list 'local _)
              'return-addr)
+         (when (lazy-saved? v)
+           (emit-before (lazy-load v)))
          (match (dict-ref assignments v)
            ;; register
            [(list 'register r)
             r]
-           ;; spill this from scratch reg after call
+           ;; spilled, stack-resident; load into scratch register
            [(and loc
                  (list (or 'spill 'frame) _))
             (emit-before (load-spilled target-reg loc v))
@@ -98,6 +115,14 @@
         [(list 'register n)
          n]
         [(? integer?) v]))
+    
+    ;; (var-live-past? var pos)
+    ;; 
+    (define (var-live-past? var pos)
+      (let ([interval (assoc var intervals)])
+        (and interval
+             (< (interval-start interval) pos)
+             (> (interval-end interval) pos))))
     ;;
     ;; (reg-vars-live-past pos)
     ;;
@@ -109,25 +134,17 @@
                                        cdr)
                               assignments)])
         (filter (lambda (asg)
-                  (let ([interval (assoc (car asg) intervals)])
-                    (and interval
-                         (< (interval-start interval) pos)
-                         (> (interval-end interval) pos))))
+                  (var-live-past? (car asg) pos))
                 reg-vars)))
     (define (save-regs-for-call pos except)
       (for ([(var reg) (in-dict (dict-remove (reg-vars-live-past pos)
-                                             except))])
+                                             except))]
+            #:unless (lazy-saved? var))
         (emit-line (store-spilled (register-num reg)
                                   (dict-ref stack-assignments var)
                                   var
-                                  "saved"))))
-    (define (restore-regs-for-call pos except)
-      (for ([(var reg) (in-dict (dict-remove (reg-vars-live-past pos)
-                                             except))])
-        (emit-line (load-spilled (register-num reg)
-                                  (dict-ref stack-assignments var)
-                                  var
-                                  "restored"))))
+                                  "saved"))
+        (set! to-lazy-load (cons var to-lazy-load))))
     (define (marshal-args args pos)
       ;; Marshals arguments into registers for a function call.
       ;;
@@ -147,8 +164,10 @@
                                     (equal? (dict-ref assignments a)
                                             (list 'register dest)))
                                   remain)]
-                 [was-saved (member arg saved)] ;; were we saved out?
-                 [use-loc (if was-saved
+                 [was-saved (or (member arg saved)
+                                (lazy-saved? arg))] ;; were we saved out?
+                 [use-loc
+                  (if was-saved
                               (dict-ref stack-assignments arg)
                               loc)])
             ;; if something is in the destination register, spill it
@@ -177,10 +196,12 @@
       (set! before empty)
       (set! after empty))
 
-    (for ([dir sasm]
-          [pos (in-naturals)])
+    (define (generate dir pos)
       (match dir
+        ;; label
         [(list 'label (? string? label) trace ...)
+         ;; paranoid policy, should do this in a smarter way
+         (flush-lazy-load! pos)
          (unless (eq? pending-label no-label)
            (error 'gen-asm "label ~a already pending, setting ~a"
                   pending-label label))
@@ -190,7 +211,7 @@
         [(list 'bind var start-reg fixed-loc ...)
          (let ([assigned (dict-ref assignments var)])
            (unless (equal? assigned (list 'register start-reg))
-             (emit-line (store-spilled start-reg assigned "relocated"))))]
+             (emit-line (store-spilled start-reg assigned (~a var)))))]
         ;; add, nand
         [(list (and (or 'add 'nand) op) s1 s2 dest)
          (emit! op
@@ -214,6 +235,7 @@
                 offset)]
         ;; beq
         [(list 'beq s1 s2 comment ...)
+         (flush-lazy-load! pos)
          (emit! 'beq
                 (subst-src s1 pos spill-s1-reg)
                 (subst-src s2 pos spill-s2-reg)
@@ -232,11 +254,8 @@
                   (format "; call ~a" (proc-name call-proc)))
            (match (dict-ref assignments dest-var)
              [(list 'register 1) #t]
-             [(list 'register n) (emit! 'add 0 1 n "; store result")]
-             [(? list? stack-loc) (emit-line (store-spilled 1 stack-loc))])
-           ;; otherwise we wanted the value in r1, and it's there now
-           ;; restore live vars
-           (restore-regs-for-call pos dest-var))]
+             [(list 'register n) (emit! 'add 0 1 n "; move result")]
+             [(? list? stack-loc) (emit-line (store-spilled 1 stack-loc))]))]
         ;; proc-call
         [(list 'proc-call dest-var proc-var args ...)
          (let* ([target-reg spill-s2-reg]
@@ -251,11 +270,8 @@
            (emit! 'jalr target-reg ret-reg (format "; call ~a" proc-var))
            (match (dict-ref assignments dest-var)
              [(list 'register 1) #t]
-             [(list 'register n) (emit! 'add 0 1 n "; store result")]
-             [(? list? stack-loc) (emit-line (store-spilled 1 stack-loc))])
-           ;; otherwise we wanted the value in r1, and it's there now
-           ;; restore live vars
-           (restore-regs-for-call pos dest-var))]
+             [(list 'register n) (emit! 'add 0 1 n "; move result")]
+             [(? list? stack-loc) (emit-line (store-spilled 1 stack-loc))]))]
         ;; tail-call
         [(list 'tail-call target ret-addr-ref args ...)
          (match target
@@ -326,5 +342,9 @@
         ;; noop
         [(list 'noop comment ...)
          (apply emit! dir)]))
+
+    (for ([dir sasm]
+          [pos (in-naturals)])
+      (generate dir pos))
     (reverse asm)))
 
