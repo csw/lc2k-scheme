@@ -44,7 +44,7 @@ def simulate(mc, extract, idx)
     begin
       until done
         
-line = p.readline
+        line = p.readline
         $stderr.puts(line) if $verbose
         case line
         when /total of (\d+) instructions executed/
@@ -68,7 +68,7 @@ line = p.readline
       end
       return info
     rescue IOError => e
-      puts "Error, last pc=#{last_pc}"
+      $stderr.puts "Error, last pc=#{last_pc}"
       raise e
     end
   end

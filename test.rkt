@@ -1,5 +1,7 @@
 #lang racket
 
+(require racket/pretty)
+
 (require "driver.rkt")
 (require "compiler.rkt")
 
@@ -18,7 +20,14 @@
 
 (define (test-case code (expect #f))
   (let* ([expected (or expect (eval (for-racket-eval code) ns))]
-         [result (compile-ret code)])
+         [result
+          (with-handlers
+              ([exn:fail?
+                (lambda (exn)
+                  (eprintf "Execution failed for:~n~a~n"
+                           (pretty-format code))
+                  (raise exn))])
+              (compile-ret code))])
     (unless (equal? result expected)
       (raise-arguments-error 'test-case
                              "Obtained wrong result"

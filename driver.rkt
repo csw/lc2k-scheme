@@ -16,15 +16,21 @@
 (define (run-lc2k prog result-loc)
   (let ([out (with-output-to-string
                (lambda ()
-                 (system* *runner*
-                          "-a" *assembler* "-s" *simulator*
-                          "-p" prog "-m" result-loc)))])
+                 (unless (system* *runner*
+                                  "-a" *assembler*
+                                  "-s" *simulator*
+                                  "-p" prog
+                                  "-m" result-loc)
+                   (error 'run-lc2k
+                          "Execution failed!"))))])
     (with-input-from-string out read-line)))
 
 (define (compile-and-run x)
   (let ([tmpf (make-temporary-file "lc2kscm-~a.as")])
     (compile-to x tmpf)
-    (run-lc2k tmpf *lc2k-rv*)))
+    (begin0
+        (run-lc2k tmpf *lc2k-rv*)
+      (delete-file tmpf))))
 
 (define (compile-ret x)
   (decode-immediate (string->number (compile-and-run x))))
