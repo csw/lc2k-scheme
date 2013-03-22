@@ -1,0 +1,139 @@
+#!/usr/bin/env ruby
+
+require 'pathname'
+require 'optparse'
+require 'tempfile'
+
+$verbose = false
+
+DIR = File.dirname(__FILE__)
+
+$assemble = "#{DIR}/assemble"
+$sim = "#{DIR}/simulator"
+
+def find_address(label, asm)
+  asm.open do |f|
+    n = 0
+    re = /^#{label}\s/
+    f.each_line do |line|
+      if line =~ re
+        return n
+      else
+        n += 1
+      end
+    end
+    raise "Failed to find label #{label} in #{asm}!"
+  end
+end
+
+def assemble(asm, mc)
+  cmd = "#{$assemble} #{asm} #{mc}"
+  unless system(cmd)
+    raise "'#{cmd}' failed: #{$?}"
+  end
+end
+
+TAG = { :register => "reg", :memory => "mem" }
+
+def simulate(mc, extract, idx)
+  info = {}
+  pat = /^\s+#{TAG.fetch(extract)}\[ #{idx} \] (-?\d+)/
+  IO.popen("#{$sim} #{mc}") do |p|
+    done = false
+    last_pc = nil
+    begin
+      until done
+        
+line = p.readline
+        $stderr.puts(line) if $verbose
+        case line
+        when /total of (\d+) instructions executed/
+        then info[:instructions] = $1.to_i
+        when /final state of machine/
+        then done = true
+        when /\s*pc (\d+)/
+        then last_pc = $1.to_i
+        end
+      end
+      value = nil
+      while true
+        line = p.gets
+        break if line.nil?
+        if line =~ pat
+          info[:value] = $1.to_i
+        end
+      end
+      if ! info[:value]
+        raise "Could not parse #{extract} #{idx} from output!"
+      end
+      return info
+    rescue IOError => e
+      puts "Error, last pc=#{last_pc}"
+      raise e
+    end
+  end
+end
+
+def run_prog(prog, extract)
+  tmp_mc = Tempfile.new([prog.basename(".as"), ".mc"])
+  tmp_mc.close
+  begin
+    assemble(prog, tmp_mc.path)
+  rescue
+    $stderr.puts "Assembly failed: #{$!}"
+    $stderr.puts "Program: #{prog}"
+    $stderr.puts $!.backtrace.join("\n")
+    exit 1
+  end
+  info = simulate(tmp_mc.path, *extract)
+  tmp_mc.unlink
+  return info
+end
+
+$prog = nil
+$extract = nil
+
+op = OptionParser.new do |opts|
+  opts.on("-p", "--program PROG", /.+\.as$/,
+          "LC2K program") do |prog|
+    $prog = Pathname.new(prog)
+  end
+  opts.on("-a", "--assembler ASM",
+          "Assembler") do |asm|
+    $assemble = asm
+  end
+  opts.on("-s", "--simulator SIM",
+          "Simulator") do |sim|
+    $sim = sim
+  end
+  opts.on("-m", "--memory-at ADDR", "Memory value to extract") do |memspec|
+    if memspec =~ /^\d+$/
+      $extract = [:memory, memspec.to_i]
+    else      
+      $extract = [:memory, memspec]
+    end
+  end
+  opts.on("--reference",
+          "Use reference assembler and simulator") do 
+    $assemble = './asol'
+    $sim = './ssol'
+  end
+  opts.on("-v", "--verbose",
+          "Verbose") do
+    $verbose = true
+  end
+end
+
+op.parse!(ARGV)
+
+unless $prog && $extract
+  $stderr.puts op
+  exit 2
+end
+
+if $extract[1].is_a? String
+  $extract[1] = find_address($extract[1], $prog)
+end
+
+info = run_prog($prog, $extract)
+puts info[:value]
