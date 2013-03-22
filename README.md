@@ -182,6 +182,10 @@ simplifies matters.
 had excellent implementation insights, as did R. Kent Dybvig's
 [ICFP talk][dybvig-talk] on the development of Chez Scheme.
 
+My [low-level IR generation](ir.rkt) owes much to the
+[approach][indiana-workshop-backend] described by Haynes and Hilsdale
+for their Compiling Scheme Workshop.
+
 Pereira's [A Survey on Register Allocation][pereira-survey] led me to
 choose a linear scan register allocator. The original
 [paper][linear-scan] by Poletto and Sarkar was very useful. However,
@@ -195,6 +199,7 @@ Erlang HiPE compiler had key insights for using it in practice.
 [might-post]: http://matt.might.net/articles/compiling-scheme-to-c/
 [intro-scheme-impl]: http://icem-www.folkwang-hochschule.de/~finnendahl/cm_kurse/doc/schintro/schintro_toc.html
 [dybvig-talk]: http://icfp06.cs.uchicago.edu/dybvig-talk.pdf
+[indiana-workshop-backend]: http://www.cs.indiana.edu/eip/compile/back.html
 [pereira-survey]: http://compilers.cs.ucla.edu/fernando/publications/drafts/survey.pdf
 [linear-scan]: http://www.seas.gwu.edu/~hchoi/teaching/cs160d/linearscan.pdf
 [sagonas]: http://onlinelibrary.wiley.com/doi/10.1002/spe.533/abstract
