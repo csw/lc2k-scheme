@@ -2,12 +2,10 @@
 
 (require "types.rkt")
 
-(provide init-global-env global-env make-env write-constant-defs
+(provide global-env make-env write-constant-defs clear-env
          env-define env-lookup const-ref
          internal-label
-         (struct-out proc) make-proc proc-pointer
-         asm-procs)
-
+         (struct-out proc) make-proc proc-pointer)
 
 ; num-environments : natural
 (define num-environments 0)
@@ -40,7 +38,6 @@
                   (env-lookup (env-parent env) k)))
       (dict-ref (env-dict env) k)))
 
-;; global
 
 (define (global-env) (dict-ref environments 0))
 
@@ -83,6 +80,15 @@
                                            "  ")))))
 
 
+(define (clear-env)
+  (set! num-environments 0)
+  (set! environments empty)
+  (make-env #f)
+  (set! constants (make-hash))
+  (set! constant-n 0)
+  (set! lambda-n 0)
+  (set! internal-n 0))
+
 (struct proc (name num label addr-label ptr-label code
                    [asm #:mutable #:auto] [address #:mutable #:auto]))
 
@@ -98,67 +104,5 @@
 (define (proc-pointer proc)
   (bitwise-ior proc-tag constant-bit (proc-address proc)))
 
-(define asm-procs
-  (list (proc 'cons -1 "Lcons" "Acons" "Pcons" #f)
-        (proc 'car  -1 "Lcar"  "Acar"  "Pcar"  #f)
-        (proc 'cdr  -1 "Lcdr"  "Acdr"  "Pcdr"  #f)))
 
-(define asm-proc-asm
-  (list (cons 'cons
-              #(    "        noop"
-                    "Lcons   lw   0 5 heap"
-                    "        lw   0 4 consS"
-                    "        add  4 5 4"
-                    "        sw   0 4 heap"
-                    "        sw   4 1 0"
-                    "        sw   4 2 1"
-                    "        lw   0 5 ctag"
-                    "        add  4 5 1"
-                    "        jalr 6 5"))
-        (cons 'car
-              #(    "        noop"
-                    "Lcar    lw   0 5 pmask"
-                    "        nand 1 5 1"
-                    "        nand 1 1 1"
-                    "        lw   1 1 0"
-                    "        jalr 6 5"
-                    "        noop"))
-        (cons 'cdr
-              #("        noop"
-                "Lcdr    lw   0 5 pmask"
-                "        nand 1 5 1"
-                "        nand 1 1 1"
-                "        lw   1 1 1"
-                "        jalr 6 5"))))
 
-(define immed-constants
-  `((empty           . ,empty-list-v)
-    (#t              . ,true-v)
-    (#f              . ,false-v)
-    (%tagged-mask    . ,tagged-mask)
-    (%tagged-tag     . ,tagged-tag)
-    (%type-tag-mask  . ,type-tag-mask)
-    (%char-tag       . ,char-tag)
-    (%bool-tag       . ,bool-tag)
-    (%cons-tag       . ,cons-tag)
-    (%proc-tag       . ,proc-tag)
-    (%sign-bit       . ,(expt 2 31))
-    (%max-fixnum-bit . ,(expt 2 29))
-    (%all-ones       . ,(bitwise-not 0))))
-
-(define (init-global-env)
-  (set! num-environments 0)
-  (set! environments empty)
-  (make-env #f)
-  (set! constants (make-hash))
-  (set! constant-n 0)
-  (set! lambda-n 0)
-  (set! internal-n 0)
-  (for ([def immed-constants])
-    (env-define (global-env)
-                (car def)
-                (list 'immediate (cdr def))))
-  (for ([aproc asm-procs])
-    (env-define (global-env) (proc-name aproc) aproc)
-    (set-proc-asm! aproc (dict-ref asm-proc-asm (proc-name aproc)))))
-(init-global-env)

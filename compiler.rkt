@@ -23,6 +23,62 @@
 (provide compile-program compile-to *lc2k-rv* decode-immediate
          compile-print-file)
 
+;; This is the top-level module of the compiler. The interesting code
+;; is elsewhere:
+;;
+;; types: defines how tagged immediates and pointers work.
+;; environ: manages namespaces, constant pools, procedures.
+;; runtime: basic runtime support for executing Scheme code.
+;; rt-code.scm: Scheme runtime code.
+;; lc2k: a few basic machine definitions.
+;; util: a few generally-useful functions.
+;;
+;; frontend: preliminary transformations on Scheme code.
+;; ir: generates pseudo-assembler IR with virtual registers.
+;; linear-scan: allocates virtual registers to real ones or the stack.
+;; backend: generates LC2K assembly code.
+;;
+;; driver: wrapper to compile, assemble, run, and display output.
+;; runner: Ruby script to drive the assembler and simulator, parse output.
+;; test: test suite, showing the currently supported features.
+
+;; immed-constants:
+;;
+;; Built-in immediate (i.e. not pointer types) constants available to
+;; Scheme code. The car is the symbol they will be bound under.
+;;
+;; Note that the % prefix, in general, marks implementation-level code
+;; or data not intended for use in user code.
+
+(define immed-constants
+  `((empty           . ,empty-list-v)
+    (#t              . ,true-v)
+    (#f              . ,false-v)
+    (%tagged-mask    . ,tagged-mask)
+    (%tagged-tag     . ,tagged-tag)
+    (%type-tag-mask  . ,type-tag-mask)
+    (%char-tag       . ,char-tag)
+    (%bool-tag       . ,bool-tag)
+    (%cons-tag       . ,cons-tag)
+    (%proc-tag       . ,proc-tag)
+    (%sign-bit       . ,(expt 2 31))
+    (%max-fixnum-bit . ,(expt 2 29))
+    (%all-ones       . ,(bitwise-not 0))))
+
+(define (init-global-env)
+  ;; reset everything
+  (clear-env)
+  ;; define basic constants
+  (for ([def immed-constants])
+    (env-define (global-env)
+                (car def)
+                (list 'immediate (cdr def))))
+  ;; define asm procedures
+  (for ([aproc asm-procs])
+    (env-define (global-env) (proc-name aproc) aproc)))
+
+(init-global-env)
+
 ;; Parse a list of symbols from an environment variable.
 
 (define (env-symbols var)
