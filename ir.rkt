@@ -132,6 +132,14 @@
          [(eq? cd next-label) #t]
          ;; jump to next label
          [else (emit! 'beq 0 0 cd)]))
+      (define (gen-args args)
+        (let ([arg-temp-alist
+               (for/list ([arg (sort args >
+                                     #:key cost-estimate
+                                     #:cache-keys? #t)])
+                 (cons arg (cg arg #f #f #f)))])
+          (map (compose cdr (curryr assq arg-temp-alist))
+               args)))
       (define (gen-children cl cr body-label)
         ;; XXX: need to improve this
         (cond
@@ -204,13 +212,7 @@
           [(list 'call (? symbol? sym) args ...)
            ;; marshal arguments
            (let* ([next-label (internal-label)]
-                  [arg-temp-alist
-                   (for/list ([arg (sort args >
-                                         #:key cost-estimate
-                                         #:cache-keys? #t)])
-                     (cons arg (cg arg #f #f #f)))]
-                  [arg-temps (map (compose cdr (curryr assq arg-temp-alist))
-                                  args)]
+                  [arg-temps (gen-args args)]
                   [dest-reg (or dd (alloc-temp))]
                   [target-entry (env-lookup env sym)]
                   [target-label (and (proc? target-entry)
