@@ -17,7 +17,7 @@
   (zero? (bitwise-and v 1)))
 
 (define (odd? v)
-  (not (zero? (bitwise-and v 1))))
+  (if (zero? (bitwise-and v 1)) #f #t))
 
 (define (+ x y)
   (+ x y))
