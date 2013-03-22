@@ -172,9 +172,9 @@
     (define (emit-unwrapped! . dir)
       (emit-line (fmt-asm dir)))
     (define (emit! . dir)
-      (for-each emit-line before)
+      (for-each emit-line (reverse before))
       (apply emit-unwrapped! dir)
-      (for-each emit-line after)
+      (for-each emit-line (reverse after))
       (set! before empty)
       (set! after empty))
 
