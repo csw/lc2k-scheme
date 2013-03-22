@@ -49,20 +49,25 @@ It does *not* yet implement:
 
 ## Simple compilation
 
-With the test file [examples/fc1.scm](examples/fc1.scm):
+With the test file [examples/fib.scm](examples/fib.scm):
 
 ```scheme
-(define (use f)
-  (f 1 2))
+(define (fib-aux n a b)
+  (if (zero? n)
+      a
+      (fib-aux (- n 1) b (+ a b))))
 
-(use +)
+(define (fib n)
+  (fib-aux n 0 1))
+
+(fib 21)
 ```
 
 We can compile this from the comment line with:
 
-    $ racket -t compiler.rkt examples/fc-fun-1.scm > fc1.as
+    $ racket -t compiler.rkt examples/fib.scm > fib.as
 
-This will write out LC2K [assembly](examples/fc-fun-1.as) suitable for
+This will write out LC2K [assembly](examples/fib.as) suitable for
 assembling and running on a simulator. When the machine halts, the
 result will be encoded as a Scheme value in register 1, and stored to
 the location labeled `SCMrv` in the assembly code.
@@ -87,9 +92,9 @@ of the assembler and simulator programs. For instance, to use the
 
 Now, use `driver.rkt`:
 
-    $ racket -t driver.rkt examples/fc-fun-1.scm
-    3
-    $ racket -t driver.rkt examples/sum-1.scm
+    $ racket -t driver.rkt examples/fib.scm
+    10946
+    $ racket -t driver.rkt examples/foldl.scm
     15
 
 Admittedly, the output isn't very exciting, but you can see from the
@@ -97,21 +102,29 @@ source code that it's correct.
 
 # Examples
 
-For a slightly more interesting example, see
-[examples/sum-1.scm](examples/sum-1.scm):
+To see lists and first-class functions in action, see
+[examples/foldl.scm](examples/foldl.scm):
 
 ```scheme
-(define (sum l acc)
-  (if (empty? l)
-      acc
-      (sum (cdr l)
-           (+ (car l) acc))))
+(define (foldl proc init lst)
+  (if (empty? lst)
+      init
+      (foldl proc
+             (proc init (car lst))
+             (cdr lst))))
 
-(sum (cons 1 (cons 2 (cons 3 (cons 4 (cons 5 empty)))))
-     0)
+(foldl +
+       0
+       (cons 1 (cons 2 (cons 3 (cons 4 (cons 5 empty))))))
 ```
 
-And the corresponding [assembly code](examples/sum-1.scm).
+And the corresponding [assembly code](examples/foldl.scm).
+
+(For non-Lispers, the standard lists are linked lists created with
+`cons`; each cons cell has a head, accessed with `car`, and a tail,
+accessed with `cdr`, which should generally be another cons cell or
+the special value `empty`. This builds the list `(1 2 3 4 5)`, then
+sums its elements.)
 
 # Requirements
 
