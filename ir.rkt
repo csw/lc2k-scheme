@@ -1,5 +1,7 @@
 #lang racket
 
+(require racket/trace)
+
 (require "types.rkt")
 (require "environ.rkt")
 (require "lc2k.rkt")
@@ -94,6 +96,23 @@
       (begin0
           (list 'temp n-temp)
         (set! n-temp (add1 n-temp))))
+    ;;
+    ;; cost-estimate: rough relative measure of the local cost of
+    ;;     function args, in order to evaluate the most expensive ones
+    ;;     first to minimize temp lifetimes.
+    ;;
+    (define/match (cost-estimate exp)
+      [((? const?)) 1]
+      [((? symbol?))
+       (match (env-lookup env exp)
+         ;; needs to match all environment entry types
+         ;; as defined in environ.rkt
+         [(list 'local name) 0]
+         [(list 'immediate val) 1]
+         [(struct proc _) 1])]
+      [((list 'primcall _ ...)) 2]
+      [((list 'call _ ...)) 6]
+      [((list 'if _ ...)) 3])
     (define (no-code? exp)
       (and (symbol? exp)
            (tagged-list? 'local (env-lookup env exp))))
@@ -185,14 +204,13 @@
           [(list 'call (? symbol? sym) args ...)
            ;; marshal arguments
            (let* ([next-label (internal-label)]
-                  [arg-temps
-                   (for/list ([arg args])
-                     (if (no-code? arg)
-                         (cg arg #f next-label next-label)
-                         (begin0
-                             (cg arg #f next-label next-label)
-                           (emit! 'label next-label)
-                           (set! next-label (internal-label)))))]
+                  [arg-temp-alist
+                   (for/list ([arg (sort args >
+                                         #:key cost-estimate
+                                         #:cache-keys? #t)])
+                     (cons arg (cg arg #f #f #f)))]
+                  [arg-temps (map (compose cdr (curryr assq arg-temp-alist))
+                                  args)]
                   [dest-reg (or dd (alloc-temp))]
                   [target-entry (env-lookup env sym)]
                   [target-label (and (proc? target-entry)
@@ -241,6 +259,8 @@
          [(tagged-list? 'if exp) #f]
          ;; generated a tail call
          [(eq? result 'tail-call) #f]
+         ;; otherwise shouldn't generate a control transfer
+         [(not cd) #f]
          ;; expression in tail position, return
          [(eq? cd 'return)
           (emit! 'return result 'return-addr)]
