@@ -8,6 +8,7 @@
 (require racket/dict)
 (require racket/format)
 (require racket/trace)
+(require racket/pretty)
 
 (provide compile-program compile-to *lc2k-rv* decode-immediate
          compile-print-file)
@@ -1501,6 +1502,12 @@
     (lambda ()
       (compile-program x))
     #:exists 'must-truncate))
+
+(define (compile-file-to prog-file out-path)
+  (with-output-to-file out-path
+    (lambda ()
+      (compile-program (file->list prog-file)))
+    #:exists 'truncate))
 
 (define (compile-print-file path)
   (compile-program (file->list path)))
