@@ -69,7 +69,7 @@
 ;;
 ;;   assignments: alist dict
 ;;     keys:   (temp N) | return-addr
-;;     values: (register N) | (spill N)
+;;     values: (register N) | (spill N) | (frame N)
 ;;
 ;;   intervals: list of interval record lists, each as follows:
 ;;     (var interval-begin interval-end asm)
@@ -212,11 +212,16 @@
                                  ;; note that this always includes 4
                                  ;; for registers 1, 2, 3, 6
                                  (dict-ref frame-info 'spill-slots))]
+                [(has-stack-vars)
+                 (findf (compose not (curry tagged-list? 'register))
+                        (dict-values assignments))]
                 ;; conservative; might want to check for actual
                 ;; save/restore generation and work this out later
+                ;; TODO: use has-spilled, sort this out
                 [(skip-frame-setup) (and is-leaf
-                                         (= (set-count regs-used)
-                                            (dict-count assignments)))])
+                                         ;; (= (set-count regs-used)
+                                         ;;    (dict-count assignments))
+                                         (not has-stack-vars))])
     (dict-set* frame-info
                'is-leaf is-leaf
                'stack-assignments stack-assignments
