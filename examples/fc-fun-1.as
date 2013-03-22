@@ -82,15 +82,13 @@ L3      lw      0       4       C2
         add     0       3       1       ; marshal arg 1
         lw      0       5       A1      ; load address of zero?
         jalr    5       6       ; call zero?
-        add     0       1       2       ; store result
-        lw      7       6       5       ; load restored value return-addr
-        sw      7       6       5       ; store saved value return-addr
+        add     0       1       2       ; move result
         add     0       2       1       ; marshal arg 1
         lw      0       5       A0      ; load address of not
         jalr    5       6       ; call not
-        add     0       1       3       ; store result
-        lw      7       6       5       ; load restored value return-addr
+        add     0       1       3       ; move result
         lw      0       2       C0      ; (temp 5) = #f
+        lw      7       6       5       ; load restored value return-addr
         beq     2       3       I21    
         beq     0       0       I20    
 I21     lw      0       2       C1      ; (temp 0) = #t
@@ -124,9 +122,9 @@ L5      lw      0       4       C2
         add     0       3       1       ; marshal arg 1
         lw      0       5       A1      ; load address of zero?
         jalr    5       6       ; call zero?
-        add     0       1       2       ; store result
-        lw      7       6       5       ; load restored value return-addr
+        add     0       1       2       ; move result
         add     0       2       1       ; marshal arg 1
+        lw      7       6       5       ; load restored value return-addr
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         lw      0       4       A0      ; load target address
@@ -138,19 +136,19 @@ L6      add     1       2       3
         noop    ; [boolean?] '(code (v) (if (primcall %eq? (primcall %band %type-tag-mask v) %bool-tag) #t #f))
 L7      lw      0       4       C2     
         add     7       4       7       ; SP -= 5
-        sw      7       6       5       ; store spilled value relocated
+        sw      7       6       5       ; store spilled value return-addr
         lw      0       2       C0      ; (temp 1) = %bool-tag
         lw      0       3       C6      ; (temp 2) = %type-tag-mask
         nand    3       1       6      
         nand    6       6       6      
-        beq     6       2       I48    
+        beq     6       2       I43    
         lw      0       3       C0      ; (temp 0) = #f
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         jalr    5       4       ; return
-I48     lw      0       3       C1      ; (temp 0) = #t
+I43     lw      0       3       C1      ; (temp 0) = #t
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
@@ -159,19 +157,19 @@ I48     lw      0       3       C1      ; (temp 0) = #t
         noop    ; [char?] '(code (v) (if (primcall %eq? (primcall %band %type-tag-mask v) %char-tag) #t #f))
 L8      lw      0       4       C2     
         add     7       4       7       ; SP -= 5
-        sw      7       6       5       ; store spilled value relocated
+        sw      7       6       5       ; store spilled value return-addr
         lw      0       2       C7      ; (temp 1) = %char-tag
         lw      0       3       C6      ; (temp 2) = %type-tag-mask
         nand    3       1       6      
         nand    6       6       6      
-        beq     6       2       I55    
+        beq     6       2       I50    
         lw      0       3       C0      ; (temp 0) = #f
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         jalr    5       4       ; return
-I55     lw      0       3       C1      ; (temp 0) = #t
+I50     lw      0       3       C1      ; (temp 0) = #t
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
@@ -180,6 +178,21 @@ I55     lw      0       3       C1      ; (temp 0) = #t
         noop    ; [eq?] '(code (obj1 obj2) (if (primcall %eq? obj1 obj2) #t #f))
 L9      lw      0       4       C2     
         add     7       4       7       ; SP -= 5
+        beq     1       2       I57    
+        lw      0       2       C0      ; (temp 0) = #f
+        add     0       2       1       ; place return value
+        lw      0       4       C3     
+        add     7       4       7       ; SP += 5
+        jalr    6       4       ; return
+I57     lw      0       2       C1      ; (temp 0) = #t
+        add     0       2       1       ; place return value
+        lw      0       4       C3     
+        add     7       4       7       ; SP += 5
+        jalr    6       4       ; return
+        noop    ; [empty?] '(code (v) (if (primcall %eq? v ()) #t #f))
+L10     lw      0       4       C2     
+        add     7       4       7       ; SP -= 5
+        lw      0       2       C8      ; (temp 1) = ()
         beq     1       2       I62    
         lw      0       2       C0      ; (temp 0) = #f
         add     0       2       1       ; place return value
@@ -191,8 +204,8 @@ I62     lw      0       2       C1      ; (temp 0) = #t
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         jalr    6       4       ; return
-        noop    ; [empty?] '(code (v) (if (primcall %eq? v ()) #t #f))
-L10     lw      0       4       C2     
+        noop    ; [null?] '(code (v) (if (primcall %eq? v ()) #t #f))
+L11     lw      0       4       C2     
         add     7       4       7       ; SP -= 5
         lw      0       2       C8      ; (temp 1) = ()
         beq     1       2       I67    
@@ -206,37 +219,22 @@ I67     lw      0       2       C1      ; (temp 0) = #t
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         jalr    6       4       ; return
-        noop    ; [null?] '(code (v) (if (primcall %eq? v ()) #t #f))
-L11     lw      0       4       C2     
-        add     7       4       7       ; SP -= 5
-        lw      0       2       C8      ; (temp 1) = ()
-        beq     1       2       I72    
-        lw      0       2       C0      ; (temp 0) = #f
-        add     0       2       1       ; place return value
-        lw      0       4       C3     
-        add     7       4       7       ; SP += 5
-        jalr    6       4       ; return
-I72     lw      0       2       C1      ; (temp 0) = #t
-        add     0       2       1       ; place return value
-        lw      0       4       C3     
-        add     7       4       7       ; SP += 5
-        jalr    6       4       ; return
         noop    ; [pair?] '(code (v) (if (primcall %eq? (primcall %band %type-tag-mask v) %cons-tag) #t #f))
 L12     lw      0       4       C2     
         add     7       4       7       ; SP -= 5
-        sw      7       6       5       ; store spilled value relocated
+        sw      7       6       5       ; store spilled value return-addr
         lw      0       2       C9      ; (temp 1) = %cons-tag
         lw      0       3       C6      ; (temp 2) = %type-tag-mask
         nand    3       1       6      
         nand    6       6       6      
-        beq     6       2       I77    
+        beq     6       2       I72    
         lw      0       3       C0      ; (temp 0) = #f
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         jalr    5       4       ; return
-I77     lw      0       3       C1      ; (temp 0) = #t
+I72     lw      0       3       C1      ; (temp 0) = #t
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
@@ -245,19 +243,19 @@ I77     lw      0       3       C1      ; (temp 0) = #t
         noop    ; [integer?] '(code (v) (if (primcall %eq? (primcall %band %tagged-mask v) %tagged-tag) #f #t))
 L13     lw      0       4       C2     
         add     7       4       7       ; SP -= 5
-        sw      7       6       5       ; store spilled value relocated
+        sw      7       6       5       ; store spilled value return-addr
         lw      0       2       C7      ; (temp 1) = %tagged-tag
         lw      0       3       C10     ; (temp 2) = %tagged-mask
         nand    3       1       6      
         nand    6       6       6      
-        beq     6       2       I84    
+        beq     6       2       I79    
         lw      0       3       C1      ; (temp 0) = #t
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         jalr    5       4       ; return
-I84     lw      0       3       C0      ; (temp 0) = #f
+I79     lw      0       3       C0      ; (temp 0) = #f
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
@@ -266,19 +264,19 @@ I84     lw      0       3       C0      ; (temp 0) = #f
         noop    ; [number?] '(code (v) (if (primcall %eq? (primcall %band %tagged-mask v) %tagged-tag) #f #t))
 L14     lw      0       4       C2     
         add     7       4       7       ; SP -= 5
-        sw      7       6       5       ; store spilled value relocated
+        sw      7       6       5       ; store spilled value return-addr
         lw      0       2       C7      ; (temp 1) = %tagged-tag
         lw      0       3       C10     ; (temp 2) = %tagged-mask
         nand    3       1       6      
         nand    6       6       6      
-        beq     6       2       I91    
+        beq     6       2       I86    
         lw      0       3       C1      ; (temp 0) = #t
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         jalr    5       4       ; return
-I91     lw      0       3       C0      ; (temp 0) = #f
+I86     lw      0       3       C0      ; (temp 0) = #f
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
@@ -287,19 +285,19 @@ I91     lw      0       3       C0      ; (temp 0) = #f
         noop    ; [procedure?] '(code (v) (if (primcall %eq? (primcall %band %type-tag-mask v) %proc-tag) #t #f))
 L15     lw      0       4       C2     
         add     7       4       7       ; SP -= 5
-        sw      7       6       5       ; store spilled value relocated
+        sw      7       6       5       ; store spilled value return-addr
         lw      0       2       C11     ; (temp 1) = %proc-tag
         lw      0       3       C6      ; (temp 2) = %type-tag-mask
         nand    3       1       6      
         nand    6       6       6      
-        beq     6       2       I98    
+        beq     6       2       I93    
         lw      0       3       C0      ; (temp 0) = #f
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
         add     7       4       7       ; SP += 5
         jalr    5       4       ; return
-I98     lw      0       3       C1      ; (temp 0) = #t
+I93     lw      0       3       C1      ; (temp 0) = #t
         lw      7       5       5       ; load spilled value return-addr
         add     0       3       1       ; place return value
         lw      0       4       C3     
@@ -363,30 +361,30 @@ P2    .fill 1761607737
 A3    .fill L3
 P3    .fill 1761607754
 A4    .fill L4
-P4    .fill 1761607786
+P4    .fill 1761607784
 A5    .fill L5
-P5    .fill 1761607797
+P5    .fill 1761607795
 A6    .fill L6
-P6    .fill 1761607814
+P6    .fill 1761607812
 A7    .fill L7
-P7    .fill 1761607818
+P7    .fill 1761607816
 A8    .fill L8
-P8    .fill 1761607839
+P8    .fill 1761607837
 A9    .fill L9
-P9    .fill 1761607860
+P9    .fill 1761607858
 A10    .fill L10
-P10    .fill 1761607874
+P10    .fill 1761607872
 A11    .fill L11
-P11    .fill 1761607889
+P11    .fill 1761607887
 A12    .fill L12
-P12    .fill 1761607904
+P12    .fill 1761607902
 A13    .fill L13
-P13    .fill 1761607925
+P13    .fill 1761607923
 A14    .fill L14
-P14    .fill 1761607946
+P14    .fill 1761607944
 A15    .fill L15
-P15    .fill 1761607967
+P15    .fill 1761607965
 A16    .fill L16
-P16    .fill 1761607988
+P16    .fill 1761607986
 A17    .fill L17
-P17    .fill 1761608001
+P17    .fill 1761607999
