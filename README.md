@@ -118,7 +118,7 @@ To see lists and first-class functions in action, see
        (cons 1 (cons 2 (cons 3 (cons 4 (cons 5 empty))))))
 ```
 
-And the corresponding [assembly code](examples/foldl.scm).
+And the corresponding [assembly code](examples/foldl.as).
 
 (For non-Lispers, the standard lists are linked lists created with
 `cons`; each cons cell has a head, accessed with `car`, and a tail,
