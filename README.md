@@ -132,6 +132,39 @@ sums its elements.)
 - Ruby (tested with 1.9.3)
 - LC2K assembler and simulator
 
+# LC2K in a nutshell
+
+The LC2K is a 32-bit word-addressed RISC machine with eight registers
+(0 through 7, and register 0 always holds 0), a 16-bit address space,
+and eight instructions.
+
+Instruction set:
+ - `add`: adds integers
+ - `nand`: bitwise NAND
+ - `lw`: load word, base+offset addressing
+ - `sw`: store word, base+offset addressing
+ - `beq`: branch if equal
+ - `jalr`: jump and link register
+ - `noop`: what it says on the tin
+ - `halt`: likewise
+
+## Lisp implementation considerations for the LC2K
+
+Having 16-bit address space with a 32-bit word size means there are
+plenty of extra bits for type tags on pointers, so I use a
+tagged-pointer representation.
+
+Lisp implementations usually use a few low bits as tag bits, and use
+right shifts to turn minimally-tagged integers into machine integers,
+but the lack of a shifter on the LC2K makes this impractical. Instead,
+the two high bits are `01` to indicate a tagged word (anything other
+than an integer). This lets us use native machine integers as Scheme
+integers; the tag bits can be masked off of pointers as necessary, in
+only a few instructions.
+
+See [types.rkt](types.rkt) for more details on the data
+representations.
+
 # Resources
 
 Having never written a compiler before, I found several resources
