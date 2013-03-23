@@ -79,14 +79,6 @@
 
 (init-global-env)
 
-;; Parse a list of symbols from an environment variable.
-
-(define (env-symbols var)
-  (let ([value (getenv var)])
-    (if value
-        (map string->symbol (string-split value))
-        empty)))
-
 ;; For compilation debugging:
 ;;
 ;; Set the 'trace' environment variable to a space-separated list of
@@ -98,7 +90,6 @@
 ;; $ trace="sum %toplevel" racket -t compiler.rkt test/sum-1.scm
 
 (define *trace-compilation-of* (env-symbols "trace"))
-(define *trace-compilation* (make-parameter #f))
 
 (struct pass (name proc arg-keys))
 
