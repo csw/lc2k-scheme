@@ -3,7 +3,7 @@
 (require "types.rkt")
 
 (provide global-env make-env write-constant-defs clear-env
-         env-define env-lookup const-ref
+         env-define env-lookup const-label raw-const-label
          internal-label
          (struct-out proc) make-proc proc-pointer)
 
@@ -61,11 +61,14 @@
 (define constants (make-hash))
 (define constant-n 0)
 
-(define (const-ref val)
-  (if (hash-has-key? constants val)
-      (hash-ref constants val)
+(define (const-label val)
+  (raw-const-label (immediate-rep val)))
+
+(define (raw-const-label raw)
+  (if (hash-has-key? constants raw)
+      (hash-ref constants raw)
       (let ([cname (format "C~a" constant-n)])
-        (hash-set! constants val cname)
+        (hash-set! constants raw cname)
         (set! constant-n (add1 constant-n))
         cname)))
 

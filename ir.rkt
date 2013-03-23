@@ -141,14 +141,12 @@
         (match exp
           ;; immediate constant reference
           [(? immed-const?)
-           (let* ([imm (immediate-rep exp)]
-                  [cname (const-ref imm)])
-             (if (and dd (not (eq? cd 'return)))
-                 (begin
-                   (emit! 'lw 0 dd cname
+           (if (and dd (not (eq? cd 'return)))
+               (begin
+                 (emit! 'lw 0 dd (const-label exp)
                         (format "; ~a = ~a" dd exp))
-                   dd)
-                 (list 'constant cname)))]
+                 dd)
+               (list 'constant exp exp))]
           ;; register reference
           [(list 'register n)
            exp]
@@ -158,13 +156,12 @@
              (match referent
                ;; constant, from the constant pool
                [(list 'immediate val)
-                (let* ([cname (const-ref val)])
-                  (if (and dd (not (eq? cd 'return)))
-                      (begin
-                        (emit! 'lw 0 dd cname
-                               (format "; ~a = ~a" dd exp))
-                        dd)
-                      (list 'constant cname)))]
+                (if (and dd (not (eq? cd 'return)))
+                    (begin
+                      (emit! 'lw 0 dd (const-label val)
+                             (format "; ~a = ~a" dd exp))
+                      dd)
+                    (list 'constant val exp))]
                ;; register variable (formal param)
                [(list 'local name)
                 referent]
@@ -192,10 +189,13 @@
                   [dest (or dd (alloc-temp))])
              (emit! 'label op-label)
              (match prim
-               ['%add  (emit! 'add t1 t2 dest)]
-               ['%nand (emit! 'nand t1 t2 dest)]
+               ['%add  (emit! 'add t1 t2 dest
+                              (format "~a = ~a + ~a" dest t1 t2))]
+               ['%nand (emit! 'nand t1 t2 dest
+                              (format "~a = ~a NAND ~a" dest t1 t2))]
                ['%band (emit! 'nand t1 t2 dest)
-                       (emit! 'nand dest dest dest)])
+                       (emit! 'nand dest dest dest
+                              (format "~a = ~a & ~a" dest t1 t2))])
              dest)]
           ;; function call
           [(list 'call (? symbol? sym) args ...)

@@ -58,8 +58,8 @@
     (define (emit-after line)
       (set! after (cons line after)))
     (define/match (var-loc var)
-      [((list 'constant label))
-       (list 'mem label)]
+      [((list 'constant exp name))
+       (list 'mem (const-label exp))]
       [(else)
        (dict-ref assignments var)])
     (define/match (loc-stack-offset loc)
@@ -117,8 +117,9 @@
                  (list (or 'spill 'frame) _))
             (emit-before (load-spilled target-reg loc v))
             target-reg])]
-        [(list 'constant label)
-         (emit-before (fmt-asm (list 'lw 0 target-reg label)))
+        [(list 'constant exp name)
+         (emit-before (fmt-asm (list 'lw 0 target-reg (const-label exp)
+                                     (format "; ~a" name))))
          target-reg]
         [(list 'register n)
          n]
@@ -223,11 +224,12 @@
            (unless (equal? assigned (list 'register start-reg))
              (emit-line (store-spilled start-reg assigned (~a var)))))]
         ;; add, nand
-        [(list (and (or 'add 'nand) op) s1 s2 dest)
+        [(list (and (or 'add 'nand) op) s1 s2 dest comment ...)
          (emit! op
                 (subst-src s1 pos spill-s1-reg)
                 (subst-src s2 pos spill-s2-reg)
-                (subst-dest dest pos))]
+                (subst-dest dest pos)
+                (if (null? comment) "" (car comment)))]
         ;; lw
         [(list 'lw s1 dest offset comment ...)
          (emit! 'lw
@@ -273,7 +275,7 @@
         [(list 'proc-call dest-var proc-var args ...)
          (let* ([target-reg spill-s2-reg]
                 [proc-reg (subst-src proc-var pos target-reg)])
-           (emit! 'lw   0 spill-s1-reg (const-ref pointer-mask)
+           (emit! 'lw   0 spill-s1-reg (raw-const-label pointer-mask)
                   "; load pointer mask")
            (emit! 'nand spill-s1-reg proc-reg target-reg)
            (emit! 'nand target-reg target-reg target-reg)
@@ -311,7 +313,7 @@
             (let ([target-addr-label (proc-addr-label target)]
                   [frame-size (dict-ref frame-info 'frame-size)])
               (unless (dict-ref frame-info 'skip-frame-setup)
-                (emit! 'lw 0 spill-s1-reg (const-ref frame-size))
+                (emit! 'lw 0 spill-s1-reg (const-label frame-size))
                 (emit! 'add sp-reg spill-s1-reg sp-reg
                        (format "; SP += ~a" frame-size)))
               (emit! 'lw 0 spill-s1-reg target-addr-label
@@ -324,7 +326,7 @@
             (let* ([target-reg spill-s2-reg]
                    [proc-reg (subst-src target pos target-reg)]
                    [frame-size (dict-ref frame-info 'frame-size)])
-              (emit! 'lw   0 spill-s1-reg (const-ref pointer-mask)
+              (emit! 'lw   0 spill-s1-reg (raw-const-label pointer-mask)
                      "; load pointer mask")
               (emit! 'nand spill-s1-reg proc-reg target-reg)
               (emit! 'nand target-reg target-reg target-reg)
@@ -333,7 +335,7 @@
               ;; call for side effect, to ensure return addr is in its register
               (subst-src ret-addr-ref pos ret-reg)
               (unless (dict-ref frame-info 'skip-frame-setup)
-                (emit! 'lw 0 spill-s1-reg (const-ref frame-size))
+                (emit! 'lw 0 spill-s1-reg (const-label frame-size))
                 (emit! 'add sp-reg spill-s1-reg sp-reg
                        (format "; SP += ~a" frame-size)))
               (emit! 'jalr target-reg spill-s1-reg
@@ -346,15 +348,15 @@
            (unless (= rv-cur-reg rv-reg)
              (emit! 'add 0 rv-cur-reg rv-reg "; place return value"))
            (unless (dict-ref frame-info 'skip-frame-setup)
-             (emit! 'lw 0 spill-s1-reg (const-ref frame-size))
+             (emit! 'lw 0 spill-s1-reg (const-label frame-size))
              (emit! 'add sp-reg spill-s1-reg sp-reg
                     (format "; SP += ~a" frame-size)))
            (emit! 'jalr addr-reg spill-s1-reg "; return"))]
         ;; prologue
         [(list 'prologue)
          (unless (dict-ref frame-info 'skip-frame-setup)
-           (emit! 'lw 0 spill-s1-reg (const-ref (- (dict-ref frame-info
-                                                             'frame-size))))
+           (emit! 'lw 0 spill-s1-reg (const-label (- (dict-ref frame-info
+                                                               'frame-size))))
            (emit! 'add sp-reg spill-s1-reg sp-reg
                   (format "; SP -= ~a" (dict-ref frame-info
                                                  'frame-size))))]
