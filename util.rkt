@@ -1,6 +1,6 @@
 #lang racket
 
-(provide tagged-list? const? env-symbols
+(provide tagged-list? immed-const? env-symbols
          *trace-compilation* *trace-flags* tracing?)
 
 ;; env-symbols: string -> list-of-symbols
@@ -29,7 +29,9 @@
   (and (pair? l)
        (eq? tag (car l))))
 
-(define (const? v)
+;; an immediate literal: integer, char, boolean, or empty
+;;
+(define (immed-const? v)
   (or (integer? v)
       (char? v)
       (boolean? v)

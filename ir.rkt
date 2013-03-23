@@ -102,7 +102,7 @@
     ;;     first to minimize temp lifetimes.
     ;;
     (define/match (cost-estimate exp)
-      [((? const?)) 1]
+      [((? immed-const?)) 1]
       [((? symbol?))
        (match (env-lookup env exp)
          ;; needs to match all environment entry types
@@ -139,14 +139,16 @@
                   r-reg))]))
       (define (gen-code)
         (match exp
-          ;; constant reference
-          [(? const?)
+          ;; immediate constant reference
+          [(? immed-const?)
            (let* ([imm (immediate-rep exp)]
-                  [cname (const-ref imm)]
-                  [reg (or dd (alloc-temp))])
-             (emit! 'lw 0 reg cname
-                    (format "; ~a = ~a" reg exp))
-             reg)]
+                  [cname (const-ref imm)])
+             (if (and dd (not (eq? cd 'return)))
+                 (begin
+                   (emit! 'lw 0 dd cname
+                        (format "; ~a = ~a" dd exp))
+                   dd)
+                 (list 'constant cname)))]
           ;; register reference
           [(list 'register n)
            exp]
@@ -156,11 +158,13 @@
              (match referent
                ;; constant, from the constant pool
                [(list 'immediate val)
-                (let* ([cname (const-ref val)]
-                       [reg (or dd (alloc-temp))])
-                  (emit! 'lw 0 reg cname
-                         (format "; ~a = ~a" reg exp))
-                  reg)]
+                (let* ([cname (const-ref val)])
+                  (if (and dd (not (eq? cd 'return)))
+                      (begin
+                        (emit! 'lw 0 dd cname
+                               (format "; ~a = ~a" dd exp))
+                        dd)
+                      (list 'constant cname)))]
                ;; register variable (formal param)
                [(list 'local name)
                 referent]
@@ -257,7 +261,10 @@
          ;; jump to next label
          [else (emit! 'beq 0 0 cd)])
         result))
-    
+
+    (when (tracing? 'cg)
+      (trace cg))
+
     (emit! 'noop (format "; [~a] ~v" fun-name code-exp))
     ;; function entry point
     (emit! 'label entry-label)
@@ -291,7 +298,10 @@
 
 (define (ir-sources stmt)
   (let ([tag (car stmt)])
-    (remove* '(0 (register 0))
+    (filter-not (lambda (e)
+                  (or (eq? 0 e)
+                      (tagged-list? 'constant e)
+                      (equal? '(register 0) e)))
              (case tag
                [(add nand) (list (second stmt) (third stmt))]
                [(lw) (list (second stmt))]

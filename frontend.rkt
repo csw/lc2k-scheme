@@ -115,7 +115,7 @@
    ;; Core forms:
    [(list 'code (list args ...) body-exprs ...)
     `(code ,args ,@(map expand-prims body-exprs))]
-   [(? const?)      exp]
+   [(? immed-const?)      exp]
    [(? prim?)       exp]
    [(? ref?)        exp]
    [(? if?)         `(if ,(expand-if-pred (if->condition exp))

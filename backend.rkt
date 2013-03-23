@@ -57,6 +57,11 @@
       (set! before (cons line before)))
     (define (emit-after line)
       (set! after (cons line after)))
+    (define/match (var-loc var)
+      [((list 'constant label))
+       (list 'mem label)]
+      [(else)
+       (dict-ref assignments var)])
     (define/match (loc-stack-offset loc)
       [((list 'frame n)) (+ n (dict-ref frame-info 'frame-size))]
       [((list 'spill n)) (- (dict-ref frame-info 'spill-slots) n)])
@@ -72,7 +77,7 @@
       (unless (lazy-saved? reg-var)
         (error 'lazy-load "~v not saved!" reg-var))
       (set! to-lazy-load (remove reg-var to-lazy-load))
-      (load-spilled (register-num (dict-ref assignments reg-var))
+      (load-spilled (register-num (var-loc reg-var))
                     (dict-ref stack-assignments reg-var)
                     reg-var
                     "restored"))
@@ -85,7 +90,7 @@
       (match d
         [(or (list 'temp _)
              'return-addr)
-         (match (dict-ref assignments d)
+         (match (var-loc d)
            ;; no spill
            [(list 'register r)
             r]
@@ -103,7 +108,7 @@
              'return-addr)
          (when (lazy-saved? v)
            (emit-before (lazy-load v)))
-         (match (dict-ref assignments v)
+         (match (var-loc v)
            ;; register
            [(list 'register r)
             r]
@@ -112,6 +117,9 @@
                  (list (or 'spill 'frame) _))
             (emit-before (load-spilled target-reg loc v))
             target-reg])]
+        [(list 'constant label)
+         (emit-before (fmt-asm (list 'lw 0 target-reg label)))
+         target-reg]
         [(list 'register n)
          n]
         [(? integer?) v]))
@@ -158,10 +166,10 @@
       (define (marshal ctx dest saved)
         (unless (empty? ctx)
           (let* ([arg (car ctx)] ;; var
-                 [loc (dict-ref assignments arg)]
+                 [loc (var-loc arg)]
                  [remain (cdr ctx)]
                  [conflict (findf (lambda (a)
-                                    (equal? (dict-ref assignments a)
+                                    (equal? (var-loc a)
                                             (list 'register dest)))
                                   remain)]
                  [was-saved (or (member arg saved)
@@ -180,6 +188,8 @@
               [(list 'register n)
                (unless (= n dest)
                  (emit! 'add 0 n dest (format "; marshal arg ~a" dest)))]
+              [(list 'mem label)
+               (emit! 'lw 0 dest label)]
               [(? list?)
                (emit-line (load-spilled dest use-loc arg "arg"))])
             (marshal remain (add1 dest) (if conflict
@@ -209,7 +219,7 @@
          #f]
         ;; bind
         [(list 'bind var start-reg fixed-loc ...)
-         (let ([assigned (dict-ref assignments var)])
+         (let ([assigned (var-loc var)])
            (unless (equal? assigned (list 'register start-reg))
              (emit-line (store-spilled start-reg assigned (~a var)))))]
         ;; add, nand
@@ -253,7 +263,7 @@
            (emit! 'jalr target-reg ret-reg
                   (format "        ; call ~a"
                           (list* (proc-name call-proc) args)))
-           (match (dict-ref assignments dest-var)
+           (match (var-loc dest-var)
              [(list 'register 1) #t]
              [(list 'register n) (emit! 'add 0 1 n
                                         (format "; move result to ~a"
@@ -273,7 +283,7 @@
            (emit! 'jalr target-reg ret-reg
                   (format "        ; call ~a"
                           (list* proc-var args)))
-           (match (dict-ref assignments dest-var)
+           (match (var-loc dest-var)
              [(list 'register 1) #t]
              [(list 'register n) (emit! 'add 0 1 n
                                         (format "; move result to ~a"
