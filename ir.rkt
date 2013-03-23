@@ -117,21 +117,6 @@
       (and (symbol? exp)
            (tagged-list? 'local (env-lookup env exp))))
     (define (cg exp dd cd next-label)
-      (define (gen-tail)
-        ;; unused
-        (cond
-         ;; expression in tail position, return
-         [(eq? cd 'return)
-          ;; increment stack pointer
-          (emit! 'lw 0 call-reg (const-ref *frame-size*))
-          (emit! 'add sp-reg call-reg sp-reg
-                 (format "; SP += ~a" *frame-size*))
-          ;; and return
-          (emit! 'jalr ret-reg call-reg "; return")]
-         ;; continue directly to next label
-         [(eq? cd next-label) #t]
-         ;; jump to next label
-         [else (emit! 'beq 0 0 cd)]))
       (define (gen-args args)
         (let ([arg-temp-alist
                (for/list ([arg (sort args >
